@@ -1,0 +1,50 @@
+1. Core Architectural Layout
+
+    Body Style: Technical Notchback Sedan (3-box configuration).
+
+    Structural Design: Fixed rear glass with a separate deck-lid (trunk). This maximizes torsional rigidity (>35,000 Nm/deg target) to handle high instantaneous motor torque.
+
+    Dimensions: * Wheelbase: 2,800 mm (optimized for stability and interior volume).
+
+        Ground Clearance: 170 mm (tailored for mixed-surface reliability and stewardship of the underbody).
+
+    Mass Target: 1,800+ kg (Unladen/Kerb).
+
+    Weight Distribution: 48/52 (Front/Rear) to optimize RWD traction and turn-in agility.
+
+2. Powertrain & Hardware (The Muscle)
+    Unit: Tesla Model 3 Rear Drive Unit (RDU), Refurbished.
+    Peak Output: ∼210 kW (Motor-limited) / ∼450 Nm peak torque.
+    Differential: Mechanical Open Differential (Integrated).
+    Interface: High-speed CAN-bus (500 kbps).
+    Integration: 12V-logic bypass via AEM VCU300 or OpenInverter logic board (Replacing proprietary Tesla firmware).
+
+3. Digital Nervous System (The Brain)
+    Primary VCU (AEM VCU300): Real-time torque management, startup/shutdown sequencing, and CAN-translation.
+
+    Supervisory ECU (Renesas RH850/R-Car):
+        Polling: Constant state-monitoring of BMS (SoC, Temp, Health).
+        Logic: Execution of high-level "Arctic" simulation maps (Power limiting based on thermal/energy states).
+        HMI: Drives the minimalist/driver-focused digital cockpit.
+
+    API Command Set:
+        Throttle: Torque Request (Nm) scaled by Drive Mode.
+        Braking: Negative Torque Request (Nm) with zero-speed interlock.
+        State: Direction (F/N/R) and Inverter Enable.
+
+4. Dynamics & Control
+
+    Braking: Hydraulic-only for Alpha Prototype (ABS-Ready provisioning).
+        Software-Traction: Virtual slip control managed via the VCU to prevent rear lock-up during regeneration.
+
+    Recuperation: * Logic: Dynamic negative torque mapping.
+        Mode: "Hold" mode enabled (Active motor braking at 0 km/h for hill-start and stationary stability).
+
+    Tuning: "Software-Defined Handling" via simulation-to-field porting (Tested on Arctic servers, validated on racing tracks).
+
+5. Production & Stewardship
+    Series Size: Founder’s Series of 15–20 units.
+    Legal Pathway: Small Series / Individual Vehicle Approval (IVA).
+    Ethics: Ethical sourcing of refurbished hardware to avoid slavery-linked supply chains.
+
+    Business Model: "Systems Integrator"—acting as the connection point between Tier-1 hardware (Bosch/BorgWarner for future phases) and high-level software engineers.

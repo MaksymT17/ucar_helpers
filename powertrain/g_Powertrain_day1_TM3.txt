@@ -1,0 +1,48 @@
+This is the Master Specification for your EV prototype. It combines the engineering data of the Tesla Model 3 Drive Unit with your specific design goals: a 2,800 mm wheelbase, 170 mm ground clearance, and a 1,700 kg target weight.
+I. Powertrain: Tesla Model 3 Rear Drive Unit (RDU)
+
+This is your 3-in-1 "Hatchback-Slayer" core.
+    Peak Power: 220 kW (~295 HP) (Performance versions can reach ~340 kW / 450 HP).
+    Torque: ~400 Nm at the motor (~3,600+ Nm at the wheels after reduction).
+    Weight: 80 kg – 90 kg (Compact enough for your subframe).
+    Dimensions: ~676 mm (Width) x 554 mm (Length) x 353 mm (Height).
+    Max RPM: 18,000 RPM (Single-speed, no shifting required).
+
+II. Energy Storage: 75 kWh "Skateboard" Battery Pack
+    Configuration: Flat-pack slab mounted between axles for low Center of Gravity.
+    Estimated Weight: ~480 kg (Using Tesla-style 2170/4680 cells).
+    Dimensions: ~2,100 mm (Length) x 1,400 mm (Width) x 120 mm (Thickness).
+    Range Target: ~450–500 km (Optimized by your low drag coefficient).
+
+III. System Architecture & Controls
+
+    VCU (Vehicle Control Unit): AEM VCU300 or OpenInverter Logic Board.
+        Role: Acts as the central "brain" to translate your throttle input into Tesla CAN-bus signals.
+
+    BMS (Battery Management System): Orion BMS 2 or similar.
+        Role: Monitors cell health, temperature, and prevents over-discharge.
+
+    Charging: CCS2 Standard (Compatible with European/Ukrainian fast chargers).
+
+IV. Thermal Management (The Cooling Loop)
+    Front Radiator: Single or Dual-pass high-flow aluminum radiator.
+    Pumps: Tesla-salvage 12V variable speed brushless pumps.
+    Coolant: G48 or Tesla-spec Glycol mixture (50/50).
+    Layout: Two independent loops (Battery Loop + Powertrain Loop) sharing a common expansion tank.
+
+V. Chassis & Geometry (The "Blueprint")
+Metric	Specification
+Wheelbase	2,800 mm (Identical to your Blender model).
+Ground Clearance	170 mm (Optimized for road versatility/safety).
+Target Curb Weight	1,700 kg (Includes driver and fluids).
+Weight Distribution	48/52 (Slight rear bias for traction during acceleration).
+Drive Type	Rear-Wheel Drive (RWD) with independent rear suspension.
+VI. Component Cost Breakdown (2026 Estimated)
+
+Since you are in Kyiv, sourcing from the EU (Poland/Lithuania) is the most efficient path.
+    Tesla RDU (Used/Tested): $1,800 – $2,500
+    Battery Modules (75 kWh total): $6,000 – $9,000 (Varies by cell health)
+    Control Boards & VCU: $1,500 – $3,500
+    Custom Axles & Hubs: $800 – $1,200
+    Cooling & Wiring Hardware: $500 – $800
+    TOTAL POWERTRAIN BUDGET: ~$10,600 – $17,000
