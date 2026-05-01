@@ -1,11 +1,16 @@
 import tkinter as tk
 from tkinter import ttk
 import os
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Optional
+from collections import deque
 
 # --- EV PARAMETERS (Executive Master Spec) ---
 MASS = 1850                # kg (Target Kerb Mass)
 MAX_WHEEL_TORQUE = 3600    # Nm (Tesla Model 3 RWD Wheel Torque)
-MAX_POWER = 220000         # W (220 kW Peak)
+MAX_POWER = 210000         # W (210 kW — motor-limited per spec, software derate of Tesla RDU)
 BATTERY_CAPACITY = 75 * 3600000  # 75 kWh to Joules
 EFFICIENCY = 0.88          # Powertrain efficiency (Inverter + Motor)
 WHEEL_RADIUS = 0.33        # m
@@ -331,9 +336,60 @@ class EVSimulation:
                 self.inverter_thermal.temperature,
                 self.coolant_pt.temperature, self.coolant_bat.temperature,
                 self.emergency_shutdown)
+
+    def run_physics(self, state, lock):
+        """Physics loop — runs in its own thread, writes to shared SimState."""
+        while True:
+            t0 = time.perf_counter()
+            result = self.update()
+            with lock:
+                state.speed_kmh       = result[0]
+                state.kwh_left        = result[1]
+                state.dist_km         = result[2]
+                state.motor_temp      = result[3]
+                state.battery_temp    = result[4]
+                state.inverter_temp   = result[5]
+                state.coolant_pt_temp = result[6]
+                state.coolant_bat_temp= result[7]
+                state.emergency       = result[8]
+                state.power_kw        = self.last_power_kw
+                state.efficiency      = self.last_efficiency_kwh100
+                state.motor_action    = self.motor_thermal.cooling_action
+                state.inverter_action = self.inverter_thermal.cooling_action
+                state.battery_action  = self.battery_thermal.cooling_action
+                state.power_history.append(self.last_power_kw)
+            elapsed = time.perf_counter() - t0
+            sleep = max(0.0, DT - elapsed)
+            time.sleep(sleep)
+
+
+@dataclass
+class SimState:
+    speed_kmh:        float = 0.0
+    kwh_left:         float = 75.0
+    dist_km:          float = 0.0
+    motor_temp:       float = AMBIENT_TEMP
+    battery_temp:     float = AMBIENT_TEMP
+    inverter_temp:    float = AMBIENT_TEMP
+    coolant_pt_temp:  float = AMBIENT_TEMP
+    coolant_bat_temp: float = AMBIENT_TEMP
+    emergency:        bool  = False
+    power_kw:         float = 0.0
+    efficiency:       Optional[float] = None
+    motor_action:     int   = 0
+    inverter_action:  int   = 0
+    battery_action:   int   = 0
+    power_history:    deque = field(default_factory=lambda: deque([0.0] * int(60.0 / DT),
+                                                                   maxlen=int(60.0 / DT)))
 class EVGUI:
     def __init__(self, root):
         self.sim = EVSimulation()
+        self._state = SimState()
+        self._lock  = threading.Lock()
+        # Start physics in background thread
+        t = threading.Thread(target=self.sim.run_physics,
+                             args=(self._state, self._lock), daemon=True)
+        t.start()
         self.root = root
         self.root.title("EV prototype - System Monitor")
         self.root.configure(padx=20, pady=20)
@@ -383,12 +439,9 @@ class EVGUI:
 
         # Power diagram
         CHART_W, CHART_H = 300, 80
-        HISTORY_TICKS = int(60.0 / DT)  # 1200 ticks = 60 seconds
-        self._power_history = [0.0] * HISTORY_TICKS
         self._chart_w = CHART_W
         self._chart_h = CHART_H
-        self._history_ticks = HISTORY_TICKS
-        self._max_kw = MAX_POWER / 1000.0  # 220 kW scale
+        self._max_kw  = MAX_POWER / 1000.0
 
         power_frame = ttk.LabelFrame(left, text="Power (kW)  ■ consume  ■ regen", style="Param.TLabelframe")
         power_frame.pack(fill="x", pady=(8, 0))
@@ -397,8 +450,13 @@ class EVGUI:
         self.power_canvas = tk.Canvas(power_frame, width=CHART_W, height=CHART_H,
                                       bg="#111111", highlightthickness=0)
         self.power_canvas.pack(padx=6, pady=(0, 6))
-        # zero line
         self._zero_y = CHART_H // 2
+        # Pre-create one line per pixel column — update coords each frame, no delete/redraw
+        self._bars = [
+            self.power_canvas.create_line(px, self._zero_y, px, self._zero_y,
+                                          fill="#ff6600", width=1)
+            for px in range(CHART_W)
+        ]
         self.power_canvas.create_line(0, self._zero_y, CHART_W, self._zero_y,
                                       fill="#444444", width=1)
 
@@ -526,44 +584,50 @@ class EVGUI:
         self.sim.coolant_bat.temperature = ambient
 
     def run_sim(self):
-        speed_kmh, kwh_left, dist_km, motor_temp, battery_temp, inverter_temp, coolant_pt_temp, coolant_bat_temp, emergency = self.sim.update()
+        with self._lock:
+            s = self._state
+            speed_kmh      = s.speed_kmh
+            kwh_left       = s.kwh_left
+            dist_km        = s.dist_km
+            motor_temp     = s.motor_temp
+            battery_temp   = s.battery_temp
+            inverter_temp  = s.inverter_temp
+            coolant_pt_temp  = s.coolant_pt_temp
+            coolant_bat_temp = s.coolant_bat_temp
+            emergency      = s.emergency
+            kw             = s.power_kw
+            eff            = s.efficiency
+            motor_action   = s.motor_action
+            inverter_action= s.inverter_action
+            battery_action = s.battery_action
+            history        = list(s.power_history)
 
-        self.speed_ui.config(text=f"{speed_kmh:.1f} km/h")
-        self.battery_ui.config(text=f"Battery: {kwh_left:.2f} kWh")
-        self.dist_ui.config(text=f"Distance: {dist_km:.3f} km")
+        self.speed_ui.config(text=f"{speed_kmh:6.1f} km/h")
+        self.battery_ui.config(text=f"Battery: {kwh_left:6.2f} kWh")
+        self.dist_ui.config(text=f"Distance: {dist_km:8.3f} km")
 
-        # Power chart update
-        kw = self.sim.last_power_kw
-        self._power_history.append(kw)
-        if len(self._power_history) > self._history_ticks:
-            self._power_history.pop(0)
-
-        eff = self.sim.last_efficiency_kwh100
-        eff_str = f"{eff:.1f} kWh/100km" if eff is not None else "-- kWh/100km"
+        eff_str = f"{eff:5.1f} kWh/100km" if eff is not None else "  --- kWh/100km"
         self.power_label.config(
-            text=f"Now: {kw:+7.1f} kW    {eff_str}",
+            text=f"Now: {kw:+8.1f} kW   {eff_str}",
             foreground="#00cc44" if kw < 0 else "#ff6600")
 
-        # Redraw chart — one vertical bar per pixel column
+        # Update chart from snapshot history
         c = self.power_canvas
-        c.delete("bar")
         W, H = self._chart_w, self._chart_h
         z = self._zero_y
-        n = len(self._power_history)
-        step = max(1, n // W)  # samples per pixel
-        for px in range(W):
-            idx = int(px * n / W)
-            val = self._power_history[min(idx, n - 1)]
-            # clamp to scale
+        n = len(history)
+        for px, bar in enumerate(self._bars):
+            idx = min(int(px * n / W), n - 1)
+            val = history[idx]
             ratio = max(-1.0, min(1.0, val / self._max_kw))
-            y = z - int(ratio * z)  # above zero = consume, below = regen
-            if val >= 0:
-                color = "#cc3300" if val > self._max_kw * 0.8 else "#ff6600"
-                c.create_line(px, z, px, y, fill=color, tags="bar")
+            y = z - int(ratio * z)
+            c.coords(bar, px, z, px, y)
+            if val < 0:
+                c.itemconfig(bar, fill="#00aa44")
+            elif val > self._max_kw * 0.8:
+                c.itemconfig(bar, fill="#cc3300")
             else:
-                c.create_line(px, z, px, y, fill="#00aa44", tags="bar")
-        # redraw zero line on top
-        c.create_line(0, z, W, z, fill="#444444", width=1, tags="bar")
+                c.itemconfig(bar, fill="#ff6600")
 
         def temp_color(t, normal_max, emergency_max):
             if t > emergency_max:  return "red"
@@ -571,52 +635,48 @@ class EVGUI:
             return "black"
 
         self.motor_temp_ui.config(
-            text=f"Motor:      {motor_temp:.1f}°C",
+            text=f"Motor:      {motor_temp:5.1f}°C",
             foreground=temp_color(motor_temp, MOTOR_TEMP_NORMAL[1], MOTOR_TEMP_EMERGENCY[1]))
         self.battery_temp_ui.config(
-            text=f"Battery:    {battery_temp:.1f}°C",
+            text=f"Battery:    {battery_temp:5.1f}°C",
             foreground=temp_color(battery_temp, BATTERY_TEMP_NORMAL[1], BATTERY_TEMP_EMERGENCY[1]))
         self.inverter_temp_ui.config(
-            text=f"Inverter:   {inverter_temp:.1f}°C",
+            text=f"Inverter:   {inverter_temp:5.1f}°C",
             foreground=temp_color(inverter_temp, INVERTER_TEMP_NORMAL[1], INVERTER_TEMP_EMERGENCY[1]))
-        self.coolant_pt_ui.config(text=f"Coolant PT: {coolant_pt_temp:.1f}°C")
-        self.coolant_bat_ui.config(text=f"Coolant Bat:{coolant_bat_temp:.1f}°C")
+        self.coolant_pt_ui.config( text=f"Coolant PT: {coolant_pt_temp:5.1f}°C")
+        self.coolant_bat_ui.config(text=f"Coolant Bat:{coolant_bat_temp:5.1f}°C")
 
         cooling_names = {-1: "LIQUID WARM", 0: "NONE", 1: "PASSIVE", 2: "ACTIVE FAN", 3: "LIQUID COLD"}
         self.cooling_motor_ui.config(
-            text=f"Motor:    {cooling_names.get(self.sim.motor_thermal.cooling_action, '?')}")
-        self.cooling_battery_ui.config(
-            text=f"Battery:  {cooling_names.get(self.sim.battery_thermal.cooling_action, '?')}")
+            text=f"Motor:    {cooling_names.get(motor_action, '?')}")
         self.cooling_inverter_ui.config(
-            text=f"Inverter: {cooling_names.get(self.sim.inverter_thermal.cooling_action, '?')}")
+            text=f"Inverter: {cooling_names.get(inverter_action, '?')}")
+        self.cooling_battery_ui.config(
+            text=f"Battery:  {cooling_names.get(battery_action, '?')}")
 
         if emergency:
             self.emergency_ui.config(text="⚠ EMERGENCY SHUTDOWN", foreground="red")
         else:
             self.emergency_ui.config(text="✓ System Normal", foreground="green")
 
-        # Schematic overlay update
-        def ov_color(t, device):
-            if t > device.temp_emergency_max:  return "#cc0000"   # red - out of range
-            action = device.cooling_action
-            if action == CoolingAction.LIQUID_COLD or action == CoolingAction.LIQUID_WARM:
-                return "#cc6600"   # dark orange - liquid cooling active
-            if action == CoolingAction.ACTIVE_FAN or action == CoolingAction.PASSIVE:
-                return "#999900"   # dark yellow - fan/passive cooling
-            return "#006600"       # dark green - no cooling needed
+        def ov_color(t, emergency_max, action):
+            if t > emergency_max:                                          return "#cc0000"
+            if action in (CoolingAction.LIQUID_COLD, CoolingAction.LIQUID_WARM): return "#cc6600"
+            if action in (CoolingAction.ACTIVE_FAN,  CoolingAction.PASSIVE):     return "#999900"
+            return "#006600"
 
-        self.canvas.itemconfig(self._ov_outside,  text=f"{self.sim.ambient_temp:.1f}°C")
+        self.canvas.itemconfig(self._ov_outside,  text=f"{self.sim.ambient_temp:5.1f}°C")
         self.canvas.itemconfig(self._ov_motor,
-            text=f"{motor_temp:.1f}°C",
-            fill=ov_color(motor_temp, self.sim.motor_thermal))
+            text=f"{motor_temp:5.1f}°C",
+            fill=ov_color(motor_temp, MOTOR_TEMP_EMERGENCY[1], motor_action))
         self.canvas.itemconfig(self._ov_inverter,
-            text=f"{inverter_temp:.1f}°C",
-            fill=ov_color(inverter_temp, self.sim.inverter_thermal))
+            text=f"{inverter_temp:5.1f}°C",
+            fill=ov_color(inverter_temp, INVERTER_TEMP_EMERGENCY[1], inverter_action))
         self.canvas.itemconfig(self._ov_battery,
-            text=f"{battery_temp:.1f}°C",
-            fill=ov_color(battery_temp, self.sim.battery_thermal))
-        self.canvas.itemconfig(self._ov_cpt,  text=f"{coolant_pt_temp:.1f}°C")
-        self.canvas.itemconfig(self._ov_cbat, text=f"{coolant_bat_temp:.1f}°C")
+            text=f"{battery_temp:5.1f}°C",
+            fill=ov_color(battery_temp, BATTERY_TEMP_EMERGENCY[1], battery_action))
+        self.canvas.itemconfig(self._ov_cpt,  text=f"{coolant_pt_temp:5.1f}°C")
+        self.canvas.itemconfig(self._ov_cbat, text=f"{coolant_bat_temp:5.1f}°C")
 
         self.root.after(50, self.run_sim)
 

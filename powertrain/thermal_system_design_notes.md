@@ -9,7 +9,7 @@
 |---|---|---|
 | Mass | 1850 kg | Target kerb mass (aligned with day2 spec) |
 | Max wheel torque | 3600 Nm | Tesla Model 3 RWD reference |
-| Peak power | 220 kW | |
+| Peak power | 210 kW | Motor-limited per spec (software derate of Tesla RDU hardware) |
 | Battery capacity | 75 kWh | |
 | Powertrain efficiency | 0.88 | Inverter + motor combined |
 | Wheel radius | 0.33 m | |
