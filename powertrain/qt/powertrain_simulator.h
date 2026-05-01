@@ -29,6 +29,7 @@ public:
     double getDistanceKm() const { return distance / 1000.0; }
     double getTripTime() const { return tripTime; }
     double getPowerKw() const { return lastPowerKw; }
+    double getEfficiency() const { return lastEfficiencyKwh100; }
     double getMotorTemp() const { return motorTemp; }
     double getInverterTemp() const { return inverterTemp; }
     double getBatteryTemp() const { return batteryTemp; }
@@ -53,6 +54,36 @@ private:
     double distance = 0.0;      // meters
     double tripTime = 0.0;      // seconds
     double lastPowerKw = 0.0;
+
+    // Thermal Thresholds (Synced with Python Master Spec)
+    static constexpr double MOTOR_OPTIMAL_MAX = 80.0;
+    static constexpr double MOTOR_NORMAL_MAX  = 90.0;
+    static constexpr double MOTOR_CRITICAL    = 140.0;
+
+    static constexpr double INV_OPTIMAL_MAX   = 65.0;
+    static constexpr double INV_NORMAL_MAX    = 75.0;
+    static constexpr double INV_CRITICAL      = 120.0;
+
+    static constexpr double BAT_OPTIMAL_MAX   = 35.0;
+    static constexpr double BAT_NORMAL_MAX    = 45.0;
+    static constexpr double BAT_CRITICAL      = 50.0;
+
+    // Thermal Constants
+    static constexpr double NATURAL_CONVECTION    = 5.0;
+    static constexpr double PASSIVE_COOLING       = 15.0;
+    static constexpr double ACTIVE_FAN_COOLING    = 60.0;
+    static constexpr double LIQUID_COOLING_ACTIVE  = 200.0;
+    static constexpr double LIQUID_COOLING_PASSIVE = 80.0;
+    static constexpr double RAM_AIR_K             = 0.06;
+    static constexpr double COOLANT_PT_RAD_H      = 80.0;
+    static constexpr double COOLANT_BAT_RAD_H     = 120.0;
+    static constexpr double COOLANT_PT_MASS       = 33700.0;
+    static constexpr double COOLANT_BAT_MASS      = 22400.0;
+
+    double lastEfficiencyKwh100 = 0.0;
+    double effPowerSum = 0.0;
+    double effSpeedSum = 0.0;
+    int effTicks = 0;
 
     double currentRollingResistCoeff;
     double currentDragCoeffMultiplier;

@@ -54,36 +54,74 @@ void EVPowertrainSimulator::update(double dt) {
     
     lastPowerKw = (electrical_draw - regen_returned) / 1000.0;
 
-    // 6. Basic Thermal Modeling (Newton's Law of Cooling baseline)
-    // Simplified port of the heat logic
+    // Efficiency calculation (30s rolling average approximation)
+    effPowerSum += std::max(0.0, lastPowerKw);
+    effSpeedSum += speed_kmh;
+    effTicks++;
+
+    if (effTicks > 600) { // 30s at 20Hz (50ms DT)
+        effPowerSum *= (600.0 / 601.0);
+        effSpeedSum *= (600.0 / 601.0);
+        effTicks = 600;
+    }
+    double avgSpeed = effSpeedSum / std::max(1, effTicks);
+    double avgPower = effPowerSum / std::max(1, effTicks);
+    lastEfficiencyKwh100 = (avgSpeed > 2.0) ? (avgPower / avgSpeed * 100.0) : 0.0;
+
+    // 6. Thermal Modeling
     double motor_heat = std::abs(mech_power) * 0.05; // 5% loss approx
     double inv_heat = std::abs(mech_power) * 0.02;   // 2% loss approx
     double battery_heat = std::pow(electrical_draw / 400.0, 2) * 0.042;
 
-    // Natural Convection baseline (h=5)
-    double h_nat = 5.0;
-    motorTemp += ((motor_heat - h_nat * (motorTemp - ambientTemp)) * dt) / motorThermalMass;
-    inverterTemp += ((inv_heat - h_nat * (inverterTemp - ambientTemp)) * dt) / inverterThermalMass;
-    batteryTemp += ((battery_heat - h_nat * (batteryTemp - ambientTemp)) * dt) / batteryThermalMass;
-    
-    // Coolant loops follow ambient for now until the 4-zone state machine is fully ported
-    // But they will react to the ambient slider immediately
-    coolantPTTemp += (ambientTemp - coolantPTTemp) * 0.1 * dt;
-    coolantBatTemp += (ambientTemp - coolantBatTemp) * 0.1 * dt;
+    auto calculateDissipation = [&](double temp, double refCoolantTemp, CoolingAction action, double& heatToCoolant) {
+        double q_air_base = NATURAL_CONVECTION * (temp - ambientTemp);
+        heatToCoolant = 0.0;
 
-    // 7. Cooling System State Machine (Polled every 5s)
+        if (action == CoolingAction::LIQUID_COLD || action == CoolingAction::LIQUID_WARM) {
+            double h_liq = (action == CoolingAction::LIQUID_COLD) ? LIQUID_COOLING_ACTIVE : LIQUID_COOLING_PASSIVE;
+            double q_liq = h_liq * (temp - refCoolantTemp);
+            heatToCoolant = std::max(0.0, q_liq); // Only positive transfer heats the coolant loop
+            return q_air_base + q_liq;
+        } else {
+            double h_extra = (action == CoolingAction::PASSIVE) ? PASSIVE_COOLING : 
+                             (action == CoolingAction::ACTIVE_FAN) ? ACTIVE_FAN_COOLING : 0.0;
+            return q_air_base + (h_extra * (temp - ambientTemp));
+        }
+    };
+
+    double mToPT, iToPT, bToBat;
+    double mDiss = calculateDissipation(motorTemp, coolantPTTemp, motorAction, mToPT);
+    double iDiss = calculateDissipation(inverterTemp, coolantPTTemp, inverterAction, iToPT);
+    double bDiss = calculateDissipation(batteryTemp, coolantBatTemp, batteryAction, bToBat);
+
+    motorTemp += ((motor_heat - mDiss) * dt) / motorThermalMass;
+    inverterTemp += ((inv_heat - iDiss) * dt) / inverterThermalMass;
+    batteryTemp += ((battery_heat - bDiss) * dt) / batteryThermalMass;
+
+    // 7. Coolant Loop Physics (Radiator + Ram Air)
+    double h_ram_boost = RAM_AIR_K * speed * speed;
+    
+    // Powertrain Loop (Motor + Inverter)
+    double pt_rad_diss = (COOLANT_PT_RAD_H + h_ram_boost) * (coolantPTTemp - ambientTemp);
+    coolantPTTemp += ((mToPT + iToPT - pt_rad_diss) * dt) / COOLANT_PT_MASS;
+
+    // Battery Loop
+    double bat_rad_diss = (COOLANT_BAT_RAD_H + h_ram_boost) * (coolantBatTemp - ambientTemp);
+    coolantBatTemp += ((bToBat - bat_rad_diss) * dt) / COOLANT_BAT_MASS;
+
+    // 8. Cooling System State Machine (Polled every 5s)
     coolingPollTimer += dt;
     if (coolingPollTimer >= 5.0) {
         coolingPollTimer = 0.0;
-        updateDeviceCooling(motorTemp, 80.0, 90.0, motorAction);
-        updateDeviceCooling(inverterTemp, 65.0, 75.0, inverterAction);
-        updateDeviceCooling(batteryTemp, 35.0, 45.0, batteryAction);
+        updateDeviceCooling(motorTemp, MOTOR_OPTIMAL_MAX, MOTOR_NORMAL_MAX, motorAction);
+        updateDeviceCooling(inverterTemp, INV_OPTIMAL_MAX, INV_NORMAL_MAX, inverterAction);
+        updateDeviceCooling(batteryTemp, BAT_OPTIMAL_MAX, BAT_NORMAL_MAX, batteryAction);
 
-        emergencyShutdown = (motorTemp > 140.0 || inverterTemp > 120.0 || batteryTemp > 50.0);
+        emergencyShutdown = (motorTemp > MOTOR_CRITICAL || inverterTemp > INV_CRITICAL || batteryTemp > BAT_CRITICAL);
         if (emergencyShutdown) {
             thermalDerate = false;
         } else {
-            thermalDerate = (motorTemp > 90.0 || inverterTemp > 75.0 || batteryTemp > 45.0);
+            thermalDerate = (motorTemp > MOTOR_NORMAL_MAX || inverterTemp > INV_NORMAL_MAX || batteryTemp > BAT_NORMAL_MAX);
         }
     }
 }

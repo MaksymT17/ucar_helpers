@@ -328,6 +328,14 @@ void SpecViewer::updateSimulation() {
     // Feed real-time data to the graph
     powerGraph->addValue(sim.getPowerKw());
 
+    // Update efficiency label
+    double eff = sim.getEfficiency();
+    if (eff > 0.0) {
+        powerLabel->setText(QString("%1 kWh/100km").arg(eff, 0, 'f', 1));
+    } else {
+        powerLabel->setText("--- kWh/100km");
+    }
+
     int t = (int)sim.getTripTime();
     timeLabel->setText(QString("Trip Time: %1:%2:%3").arg(t/3600, 2, 10, QChar('0')).arg((t%3600)/60, 2, 10, QChar('0')).arg(t%60, 2, 10, QChar('0')));
 
@@ -349,15 +357,15 @@ void SpecViewer::updateSimulation() {
     coolantMILabel->setText(QString("Coolant M/I: %1°C").arg(sim.getCoolantPTTemp(), 5, 'f', 1));
     
     motorTempLabel->setText(QString("Motor:       %1°C").arg(sim.getMotorTemp(), 5, 'f', 1));
-    motorTempLabel->setStyleSheet(baseStyle + getTempColor(sim.getMotorTemp(), 90, 140));
+    motorTempLabel->setStyleSheet(baseStyle + getTempColor(sim.getMotorTemp(), 90.0, 140.0));
     
     inverterTempLabel->setText(QString("Inverter:    %1°C").arg(sim.getInverterTemp(), 5, 'f', 1));
-    inverterTempLabel->setStyleSheet(baseStyle + getTempColor(sim.getInverterTemp(), 75, 120));
+    inverterTempLabel->setStyleSheet(baseStyle + getTempColor(sim.getInverterTemp(), 75.0, 120.0));
     
     coolantBatLabel->setText(QString("Coolant Bat: %1°C").arg(sim.getCoolantBatTemp(), 5, 'f', 1));
     
     batteryTempLabel->setText(QString("Battery:     %1°C").arg(sim.getBatteryTemp(), 5, 'f', 1));
-    batteryTempLabel->setStyleSheet(baseStyle + getTempColor(sim.getBatteryTemp(), 45, 50));
+    batteryTempLabel->setStyleSheet(baseStyle + getTempColor(sim.getBatteryTemp(), 45.0, 50.0));
 
     // Update Cooling Status Labels using a lambda for string conversion
     auto actionToString = [](CoolingAction action) -> QString {
