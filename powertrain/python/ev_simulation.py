@@ -31,13 +31,13 @@ ROLLING_RESIST_COEFF = 0.012 # Typical EV Low-Rolling Resistance tires
 #   Motor:    bearing limit 130°C  × 0.8 → 105°C
 #   Inverter: SiC MOSFET limit 150°C × 0.8 → 120°C
 #   Battery:  cell limit 60°C      × 0.8 →  50°C
-MOTOR_TEMP_NORMAL    = (0,   120)
+MOTOR_TEMP_NORMAL    = (0,   90)   # Derate starts at 90C
 MOTOR_TEMP_OPTIMAL   = (40,  80)
 MOTOR_TEMP_EMERGENCY = (-20, 140)
-BATTERY_TEMP_NORMAL  = (15,  40)
+BATTERY_TEMP_NORMAL  = (15,  45)   # Derate starts at 45C
 BATTERY_TEMP_OPTIMAL = (20,  35)
 BATTERY_TEMP_EMERGENCY = (-10, 50)
-INVERTER_TEMP_NORMAL   = (0,   85)
+INVERTER_TEMP_NORMAL   = (0,   75)   # Derate starts at 75C
 INVERTER_TEMP_OPTIMAL  = (35,  65)
 INVERTER_TEMP_EMERGENCY = (-20, 120)
 
@@ -309,23 +309,29 @@ class EVSimulation:
             self.battery_thermal.heat_to_coolant,
             self.ambient_temp, v, DT)
 
-        # Update cooling actions every 5s — no need to change cooling mode 20x/second
+        # Update cooling hardware state machine every 5s (pumps/fans cycle protection)
         self._cooling_poll_ticks += 1
         if self._cooling_poll_ticks >= self._cooling_poll_every:
             self._cooling_poll_ticks = 0
-            motor_emergency    = self.motor_thermal.choose_cooling_action(speed_kmh)
-            inverter_emergency = self.inverter_thermal.choose_cooling_action(speed_kmh)
-            battery_emergency  = self.battery_thermal.choose_cooling_action(speed_kmh)
-            if motor_emergency or inverter_emergency or battery_emergency:
-                self.emergency_shutdown = True
-                self.thermal_derate = False
-            else:
-                self.emergency_shutdown = False
-                self.thermal_derate = (
-                    self.motor_thermal.temperature    > MOTOR_TEMP_NORMAL[1] or
-                    self.inverter_thermal.temperature > INVERTER_TEMP_NORMAL[1] or
-                    self.battery_thermal.temperature  > BATTERY_TEMP_NORMAL[1])
+            self.motor_thermal.choose_cooling_action(speed_kmh)
+            self.inverter_thermal.choose_cooling_action(speed_kmh)
+            self.battery_thermal.choose_cooling_action(speed_kmh)
+
+        # SAFETY CHECKS: Execute every physics tick (50ms) for immediate response
+        self.emergency_shutdown = (
+            self.motor_thermal.is_in_emergency(self.motor_thermal.temperature) or
+            self.inverter_thermal.is_in_emergency(self.inverter_thermal.temperature) or
+            self.battery_thermal.is_in_emergency(self.battery_thermal.temperature))
         
+        if self.emergency_shutdown:
+            self.thermal_derate = False
+        else:
+            # Intermediate Mode (Thermal Derate): 100% throttle -> 70% power
+            self.thermal_derate = (
+                self.motor_thermal.temperature    > MOTOR_TEMP_NORMAL[1] or
+                self.inverter_thermal.temperature > INVERTER_TEMP_NORMAL[1] or
+                self.battery_thermal.temperature  > BATTERY_TEMP_NORMAL[1])
+
         # Battery energy drain
         self.battery_energy -= electrical_draw * DT
         self.battery_energy += regen_returned * DT
@@ -407,15 +413,23 @@ class EVGUI:
                              args=(self._state, self._lock), daemon=True)
         t.start()
         self.root = root
-        self.root.title("EV prototype - System Monitor")
-        self.root.configure(padx=20, pady=20)
+        self.root.title("EV Prototype - System Monitor")
+        self.root.configure(padx=20, pady=20, bg="#000000")
 
         style = ttk.Style()
-        style.configure("TLabel", font=("Helvetica", 12))
-        style.configure("Header.TLabel", font=("Helvetica", 16, "bold"))
-        style.configure("Param.TLabelframe.Label", font=("Helvetica", 12, "bold"))
+        style.theme_use('clam')
+        style.configure("TLabel", font=("Helvetica", 11), background="#000000", foreground="#e0e0e0")
+        style.configure("TFrame", background="#000000")
+        style.configure("TLabelframe", background="#000000", foreground="#00d1ff", borderwidth=1)
+        style.configure("TLabelframe.Label", font=("Helvetica", 11, "bold"), background="#000000", foreground="#00d1ff")
+        style.configure("Header.TLabel", font=("Verdana", 18, "bold"), background="#000000", foreground="#ffffff")
+        style.configure("Dashboard.TLabel", font=("Courier", 24, "bold"), background="#000000", foreground="#00ff99")
+        style.configure("Horizontal.TScale", background="#000000", troughcolor="#333333")
 
-        ttk.Label(root, text="POWERTRAIN MONITOR", style="Header.TLabel").pack(pady=(0, 8))
+        header_frame = ttk.Frame(root)
+        header_frame.pack(fill="x", pady=(0, 15))
+        ttk.Label(header_frame, text="EV POWERTRAIN", style="Header.TLabel").pack(side="left")
+        ttk.Label(header_frame, text=" v1.02 ALPHA", font=("Helvetica", 10), foreground="#666666").pack(side="left", padx=5, pady=(8, 0))
 
         # ── Two-column container ──────────────────────────────────────────────
         columns = ttk.Frame(root)
@@ -423,7 +437,7 @@ class EVGUI:
 
         # ── LEFT COLUMN: controls + motion ───────────────────────────────────
         left = ttk.Frame(columns)
-        left.pack(side="left", fill="both", expand=True, padx=(0, 15))
+        left.pack(side="left", fill="both", expand=True, padx=(0, 10))
 
         self.throttle_var = tk.DoubleVar(value=0.0)
         self.throttle_label = ttk.Label(left, text="Throttle: 0%", width=32)
@@ -441,16 +455,13 @@ class EVGUI:
         brake_slider.pack(fill="x")
         brake_slider.configure(length=300)
 
-        params_frame = ttk.LabelFrame(left, text="EV Parameters", style="Param.TLabelframe")
-        params_frame.pack(fill="x", pady=8)
-        for name, value in self.sim.get_parameters():
-            ttk.Label(params_frame, text=f"{name}: {value}", font=("Helvetica", 10)).pack(anchor="w", padx=8)
-
-        self.speed_ui = ttk.Label(left, text="0.0 km/h", font=("Courier", 26, "bold"))
+        dash_frame = ttk.Frame(left)
+        dash_frame.pack(fill="x", pady=(10, 4))
+        self.speed_ui = ttk.Label(dash_frame, text="0.0 km/h", style="Dashboard.TLabel")
         self.speed_ui.pack(pady=(10, 4))
-        self.battery_ui = ttk.Label(left, text="Battery: 75.00 kWh")
+        self.battery_ui = ttk.Label(left, text="Battery: 75.00 kWh", font=("Courier", 14))
         self.battery_ui.pack(anchor="w")
-        self.dist_ui = ttk.Label(left, text="Distance: 0.000 km")
+        self.dist_ui = ttk.Label(left, text="Distance: 0.000 km", font=("Courier", 12), foreground="#aaaaaa")
         self.dist_ui.pack(anchor="w")
 
         # Power diagram
@@ -460,11 +471,11 @@ class EVGUI:
         self._max_kw  = MAX_POWER / 1000.0
 
         power_frame = ttk.LabelFrame(left, text="Power (kW)  ■ consume  ■ regen", style="Param.TLabelframe")
-        power_frame.pack(fill="x", pady=(8, 0))
+        power_frame.pack(fill="x", pady=(8, 0), ipady=2)
         self.power_label = ttk.Label(power_frame, text="Now:   0.0 kW", font=("Courier", 11, "bold"))
         self.power_label.pack(anchor="w", padx=6)
         self.power_canvas = tk.Canvas(power_frame, width=CHART_W, height=CHART_H,
-                                      bg="#111111", highlightthickness=0)
+                                      bg="#000000", highlightthickness=0)
         self.power_canvas.pack(padx=6, pady=(0, 6))
         self._zero_y = CHART_H // 2
         # Pre-create one line per pixel column — update coords each frame, no delete/redraw
@@ -474,26 +485,26 @@ class EVGUI:
             for px in range(CHART_W)
         ]
         self.power_canvas.create_line(0, self._zero_y, CHART_W, self._zero_y,
-                                      fill="#444444", width=1)
+                                      fill="#333333", width=1)
 
         self.emergency_ui = ttk.Label(left, text="✓ System Normal",
-                                      foreground="green", font=("Helvetica", 12, "bold"))
+                                      foreground="#00ff44", font=("Helvetica", 13, "bold"))
         self.emergency_ui.pack(pady=(12, 0))
 
-        # ── RIGHT COLUMN: thermal ─────────────────────────────────────────────
-        right = ttk.Frame(columns)
-        right.pack(side="left", fill="both", expand=True)
+        # ── COLUMN 2: Environment & Temperatures ──────────────────────────────
+        mid = ttk.Frame(columns)
+        mid.pack(side="left", fill="both", expand=True, padx=10)
 
-        ttk.Label(right, text="THERMAL MONITOR", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(mid, text="THERMAL MONITOR", style="Header.TLabel").pack(anchor="w")
 
-        self.ambient_label = ttk.Label(right, text=f"Ambient: {AMBIENT_TEMP:.1f}°C")
+        self.ambient_label = ttk.Label(mid, text=f"Ambient: {AMBIENT_TEMP:.1f}°C")
         self.ambient_label.pack(anchor="w", pady=(6, 0))
         self.ambient_var = tk.DoubleVar(value=AMBIENT_TEMP)
-        ttk.Scale(right, from_=-20.0, to=50.0, orient="horizontal",
+        ttk.Scale(mid, from_=-20.0, to=50.0, orient="horizontal",
                   variable=self.ambient_var, command=self.on_ambient_change).pack(fill="x")
 
         # ── Gradient selector: vertical swiper + PIL-rotated car image ───────────
-        grad_frame = ttk.LabelFrame(right, text="Road Gradient", style="Param.TLabelframe")
+        grad_frame = ttk.LabelFrame(mid, text="Road Gradient", style="Param.TLabelframe")
         grad_frame.pack(fill="x", pady=(8, 0))
 
         GCANV_W, GCANV_H = 310, 130
@@ -524,10 +535,9 @@ class EVGUI:
         self._swipe_h = GCANV_H
         self._swipe_w = SWIPE_W
 
-        # Car image canvas
-        self._grad_canvas = tk.Canvas(grad_frame, width=GCANV_W, height=GCANV_H,
-                                      bg="white", highlightthickness=1,
-                                      highlightbackground="#cccccc")
+        # Car image canvas (now with black background)
+        self._grad_canvas = tk.Canvas(grad_frame, width=GCANV_W, height=GCANV_H, bg="black",
+                                      highlightthickness=1, highlightbackground="#333333")
         self._grad_canvas.pack(side="left", pady=6)
 
         # Load + crop car image with PIL
@@ -546,20 +556,32 @@ class EVGUI:
         self.gradient_label.pack(side="left", padx=8)
 
         # Component temps
-        temps_frame = ttk.LabelFrame(right, text="Temperatures", style="Param.TLabelframe")
+        temps_frame = ttk.LabelFrame(mid, text="Temperatures", style="Param.TLabelframe")
         temps_frame.pack(fill="x", pady=8)
-
-        self.motor_temp_ui    = ttk.Label(temps_frame, text="Motor:      25.0°C", font=("Courier", 13, "bold"))
-        self.battery_temp_ui  = ttk.Label(temps_frame, text="Battery:    25.0°C", font=("Courier", 13, "bold"))
-        self.inverter_temp_ui = ttk.Label(temps_frame, text="Inverter:   25.0°C", font=("Courier", 13, "bold"))
-        self.coolant_pt_ui    = ttk.Label(temps_frame, text="Coolant PT: 25.0°C", font=("Courier", 13, "bold"))
-        self.coolant_bat_ui   = ttk.Label(temps_frame, text="Coolant Bat:25.0°C", font=("Courier", 13, "bold"))
+        row_bg = "#000000"
+        self.motor_temp_ui    = ttk.Label(temps_frame, text="Motor:      25.0°C", font=("Courier", 13, "bold"), background=row_bg)
+        self.battery_temp_ui  = ttk.Label(temps_frame, text="Battery:    25.0°C", font=("Courier", 13, "bold"), background=row_bg)
+        self.inverter_temp_ui = ttk.Label(temps_frame, text="Inverter:   25.0°C", font=("Courier", 13, "bold"), background=row_bg)
+        self.coolant_pt_ui    = ttk.Label(temps_frame, text="Coolant PT: 25.0°C", font=("Courier", 13, "bold"), background=row_bg)
+        self.coolant_bat_ui   = ttk.Label(temps_frame, text="Coolant Bat:25.0°C", font=("Courier", 13, "bold"), background=row_bg)
         for w in (self.motor_temp_ui, self.inverter_temp_ui, self.coolant_pt_ui,
                   self.battery_temp_ui, self.coolant_bat_ui):
-            w.pack(anchor="w", padx=8, pady=2)
+            w.pack(fill="x", anchor="w", padx=4, pady=2)
+
+        # ── COLUMN 3: Unit Specifications & Actions ───────────────────────────
+        right = ttk.Frame(columns)
+        right.pack(side="left", fill="both", expand=True, padx=(10, 0))
+
+        ttk.Label(right, text="SYSTEM INFO", style="Header.TLabel").pack(anchor="w")
+
+        # Moved for better horizontal layout / height reduction
+        params_frame = ttk.LabelFrame(right, text="Unit Specifications", style="Param.TLabelframe")
+        params_frame.pack(fill="x", pady=8)
+        for name, value in self.sim.get_parameters():
+            ttk.Label(params_frame, text=f"{name}: {value}", font=("Helvetica", 9), foreground="#888888").pack(anchor="w", padx=8)
 
         # Cooling actions
-        cool_frame = ttk.LabelFrame(right, text="Cooling Actions", style="Param.TLabelframe")
+        cool_frame = ttk.LabelFrame(right, text="Cooling System Status", style="Param.TLabelframe")
         cool_frame.pack(fill="x", pady=4)
 
         self.cooling_motor_ui    = ttk.Label(cool_frame, text="Motor:    NONE")
@@ -578,7 +600,7 @@ class EVGUI:
         DISP_H = IMG_H // sy   # 352
 
         img_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                "powertrain_scheme2.png")
+                                "powertrain_scheme2.png") # Assuming a black background version of the image
         raw = tk.PhotoImage(file=img_path)
         self._schema_img = raw.subsample(sx, sy)
 
@@ -645,11 +667,11 @@ class EVGUI:
     def _update_grad_image(self, pct):
         """Rotate PIL image by gradient angle on white background and update canvas."""
         angle_deg = math.degrees(math.atan(pct / 100.0))
-        # Paste car onto white background before rotating so corners are white not black
-        bg = Image.new("RGB", self._grad_pil_base.size, (255, 255, 255))
+        # Paste car onto black background before rotating so corners are black
+        bg = Image.new("RGB", self._grad_pil_base.size, (0, 0, 0))
         bg.paste(self._grad_pil_base, (0, 0))
         rotated = bg.rotate(-angle_deg, resample=Image.BICUBIC, expand=False,
-                            fillcolor=(255, 255, 255))
+                            fillcolor=(0, 0, 0))
         self._grad_tk_img = ImageTk.PhotoImage(rotated)
         self._grad_canvas.itemconfig(self._grad_img_item, image=self._grad_tk_img)
 
@@ -735,7 +757,7 @@ class EVGUI:
         def temp_color(t, normal_max, emergency_max):
             if t > emergency_max:  return "red"
             if t > normal_max:     return "orange"
-            return "black"
+            return "#00ff99"
 
         self.motor_temp_ui.config(
             text=f"Motor:      {motor_temp:5.1f}°C",

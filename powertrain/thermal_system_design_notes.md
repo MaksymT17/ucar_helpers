@@ -23,21 +23,21 @@ Three independently modelled thermal masses:
 
 | Device | Thermal Mass (J/°C) | Composition basis |
 |---|---|---|
-| Motor | 15,000 | ~30 kg steel/copper, c_p ≈ 500 J/kg·°C |
-| Battery | 18,000 | ~20 kg active cell mass, c_p ≈ 900 J/kg·°C (LiFePO4) |
-| Inverter | 3,500 | ~5 kg Al/Si, c_p ≈ 700 J/kg·°C |
+| Motor | 22,000 | Windings + Stator + Housing (Tesla RDU ref) |
+| Battery | 309,000 | Full 4416-cell pack (~480kg assembly) |
+| Inverter | 3,400 | SiC Cold plate + Logic mass |
 
 ### Temperature Bands (°C)
 
 | Device | Optimal min | Optimal max | Normal max | Emergency max |
 |---|---|---|---|---|
-| Motor | 40 | 60 | 70 | 85 |
-| Battery | 20 | 35 | 45 | 80 |
-| Inverter | 35 | 55 | 65 | 90 |
+| Motor | 40 | 80 | 90 | 140 |
+| Battery | 20 | 35 | 45 | 50 |
+| Inverter | 35 | 65 | 75 | 120 |
 
 - **Optimal** — sweet spot, no active cooling needed
-- **Normal max** — passive cooling sufficient (fins + ram air at speed)
-- **Emergency max** — triggers shutdown flag
+- **Normal max** — Triggers **Intermediate Mode** (70% Power Derate)
+- **Emergency max** — Triggers hard **Emergency Shutdown**
 
 ---
 
@@ -89,11 +89,13 @@ Q_dissipated = h · (T_component - T_reference)
 |---|---|---|
 | Natural convection | 5 | Always on, baseline |
 | Passive (fins open) | 15 | Added on top of natural |
-| Active fan | 60 | Forced air |
+| Active fan | 60 | Forced air (high load / stationary) |
 | Liquid cold | 200 | Component → coolant heat transfer |
 | Liquid warm | 80 | Passive liquid (warm-up mode) |
 
 ### 4-Zone Cooling State Machine
+Safety checks for Emergency and Derate are performed every **50ms** for immediate protection. 
+Cooling hardware (pumps/fans) escalates one step every **5s** to prevent mechanical cycling:
 ```
 T ≤ optimal_max              → step down toward NONE
 optimal_max < T ≤ normal_max → PASSIVE (ram air helps at speed)
