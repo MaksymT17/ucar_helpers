@@ -65,12 +65,8 @@ Q_inv = P_mech · (1 - η_inv)
 I = P_electrical / V_nominal
 Q_bat = I² · R_internal
 ```
-- R_internal = 0.02 Ω (~200 series cells × 0.1 mΩ/cell)
-- V_nominal = 400 V
-- Pure Joule heating — no flat percentage, physics-based
-- Note: original 0.05 Ω was corrected — gave unrealistic 17 kW at highway speed
+- R_internal = 0.042 Ω (Tesla M3 96s46p configuration)
 
----
 
 ## Cooling System
 
@@ -94,7 +90,8 @@ Q_dissipated = h · (T_component - T_reference)
 | Liquid warm | 80 | Passive liquid (warm-up mode) |
 
 ### 4-Zone Cooling State Machine
-Safety checks for Emergency and Derate are performed every **50ms** for immediate protection. 
+Safety checks for Emergency and Derate are **polled every 5 seconds** to ensure mode stability
+and prevent rapid power delivery oscillations.
 Cooling hardware (pumps/fans) escalates one step every **5s** to prevent mechanical cycling:
 ```
 T ≤ optimal_max              → step down toward NONE
@@ -112,8 +109,8 @@ Key design decision: battery and motor/inverter run separate loops because they 
 
 | Loop | Components | Thermal Mass (J/°C) | Radiator h (W/°C) | Notes |
 |---|---|---|---|---|
-| Powertrain (PT) | Motor + Inverter | 23,000 | 180 | ~6L glycol, 6.6 kg |
-| Battery (Bat) | Battery only | 15,000 | 250 | ~4L glycol, chiller-assisted |
+| Powertrain (PT) | Motor + Inverter | 33,700 | 80 | ~9L glycol, Tesla RDU Loop |
+| Battery (Bat) | Battery only | 22,400 | 120 | ~6L glycol, chiller-assisted |
 
 ### Coolant Heat Exchange
 When a component is in LIQUID_COLD or LIQUID_WARM mode:

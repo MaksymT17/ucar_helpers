@@ -178,6 +178,7 @@ class EVSimulation:
         self.ambient_temp = AMBIENT_TEMP
         self.emergency_shutdown = False
         self.thermal_derate = False  # True when any device above normal_max
+        self.smooth_limit = 1.0      # Slew-rate limited multiplier (0.0 to 1.0)
         self._cooling_poll_ticks = 0
         self._cooling_poll_every = int(COOLING_POLL_INTERVAL / DT)
         self.last_power_kw = 0.0
@@ -216,33 +217,45 @@ class EVSimulation:
         ]
 
     def update(self):
-        # Check for emergency shutdown
+        # Calculate the Target Power Limit (Binary/Instant)
         if self.emergency_shutdown:
-            applied_torque = 0
-            throttle_used = 0
+            target_limit = 0.0
+        elif self.thermal_derate:
+            target_limit = THERMAL_DERATE_FACTOR
         else:
-            derate = THERMAL_DERATE_FACTOR if self.thermal_derate else 1.0
-            throttle_used = self.throttle * derate
+            target_limit = 1.0
+
+        # --- SLEW RATE LIMITER (Soft Transition) ---
+        # Limits change to ~0.4 units per second (takes ~1.5s for 1.0 -> 0.4)
+        # This prevents the "spikes" and "blinking" during mode switches
+        ramp_step = 0.4 * DT 
+        if self.smooth_limit < target_limit:
+            self.smooth_limit = min(target_limit, self.smooth_limit + ramp_step)
+        elif self.smooth_limit > target_limit:
+            self.smooth_limit = max(target_limit, self.smooth_limit - ramp_step)
+
+        # Apply the smoothed limit to the raw throttle
+        throttle_used = self.throttle * self.smooth_limit
         
         v = self.speed
         speed_kmh = v * 3.6
         angular_vel_wheel = v / WHEEL_RADIUS
-        motor_rpm = (angular_vel_wheel * 60 / (2 * 3.14159)) * 9.04
+        motor_rpm = (angular_vel_wheel * 60 / (2 * math.pi)) * 9.04
 
-        # 1. HARD RPM LIMIT (The 18,000 RPM Wall)
-        if motor_rpm >= 18000:
-            self.speed = (18000 / 9.04) * (2 * 3.14159 * WHEEL_RADIUS / 60)
-            applied_torque = 0 # Motor cannot spin faster
+        # Power & Back-EMF Torque Curve
+        if motor_rpm < 5000:
+            max_avail_torque = MAX_WHEEL_TORQUE
         else:
-            # 2. POWER & BACK-EMF LIMIT
-            # Tesla motors lose torque at high RPM due to Back-EMF
-            if motor_rpm < 5000:
-                max_avail_torque = MAX_WHEEL_TORQUE
-            else:
-                # Torque starts dropping significantly after 5000 motor RPM
-                max_avail_torque = min(MAX_WHEEL_TORQUE, MAX_POWER / (v / WHEEL_RADIUS))
-            
-            applied_torque = throttle_used * max_avail_torque
+            # Constant Power Region: torque decreases as speed increases
+            max_avail_torque = min(MAX_WHEEL_TORQUE, MAX_POWER / max(0.01, v / WHEEL_RADIUS))
+        
+        applied_torque = throttle_used * max_avail_torque
+
+        # 1. RPM LIMITER: Soft roll-off near 18,000 RPM to prevent power oscillation/blinking
+        if motor_rpm > 17800:
+            # Linearly reduce torque to 0 from 17,800 to 18,000 RPM
+            rpm_limit_factor = max(0.0, (18000 - motor_rpm) / 200.0)
+            applied_torque *= rpm_limit_factor
 
         # 3. AERODYNAMIC DRAG (The 'Air Wall')
         # Force grows with the SQUARE of speed
@@ -317,20 +330,21 @@ class EVSimulation:
             self.inverter_thermal.choose_cooling_action(speed_kmh)
             self.battery_thermal.choose_cooling_action(speed_kmh)
 
-        # SAFETY CHECKS: Execute every physics tick (50ms) for immediate response
-        self.emergency_shutdown = (
-            self.motor_thermal.is_in_emergency(self.motor_thermal.temperature) or
-            self.inverter_thermal.is_in_emergency(self.inverter_thermal.temperature) or
-            self.battery_thermal.is_in_emergency(self.battery_thermal.temperature))
-        
-        if self.emergency_shutdown:
-            self.thermal_derate = False
-        else:
-            # Intermediate Mode (Thermal Derate): 100% throttle -> 70% power
-            self.thermal_derate = (
-                self.motor_thermal.temperature    > MOTOR_TEMP_NORMAL[1] or
-                self.inverter_thermal.temperature > INVERTER_TEMP_NORMAL[1] or
-                self.battery_thermal.temperature  > BATTERY_TEMP_NORMAL[1])
+            # SAFETY & MODE CHECKS: Updated every 5s to ensure system stability
+            # and allow components to cool down before restoring power.
+            self.emergency_shutdown = (
+                self.motor_thermal.is_in_emergency(self.motor_thermal.temperature) or
+                self.inverter_thermal.is_in_emergency(self.inverter_thermal.temperature) or
+                self.battery_thermal.is_in_emergency(self.battery_thermal.temperature))
+            
+            if self.emergency_shutdown:
+                self.thermal_derate = False
+            else:
+                # Intermediate Mode (Thermal Derate): triggers 70% power target
+                self.thermal_derate = (
+                    self.motor_thermal.temperature    > MOTOR_TEMP_NORMAL[1] or
+                    self.inverter_thermal.temperature > INVERTER_TEMP_NORMAL[1] or
+                    self.battery_thermal.temperature  > BATTERY_TEMP_NORMAL[1])
 
         # Battery energy drain
         self.battery_energy -= electrical_draw * DT
@@ -600,12 +614,13 @@ class EVGUI:
         DISP_H = IMG_H // sy   # 352
 
         img_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                "powertrain_scheme2.png") # Assuming a black background version of the image
-        raw = tk.PhotoImage(file=img_path)
-        self._schema_img = raw.subsample(sx, sy)
+                                "powertrain_scheme2.png")
+        # Using PIL for robust image loading and scaling to prevent Tkinter errors
+        self._schema_pil = Image.open(img_path).resize((DISP_W, DISP_H), Image.LANCZOS)
+        self._schema_img = ImageTk.PhotoImage(self._schema_pil)
 
         self.canvas = tk.Canvas(schema_frame, width=DISP_W, height=DISP_H,
-                                bg="#1a1a1a", highlightthickness=0)
+                                bg="#000000", highlightthickness=0)
         self.canvas.pack()
         self.canvas.create_image(0, 0, anchor="nw", image=self._schema_img)
 
