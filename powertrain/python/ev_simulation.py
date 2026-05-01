@@ -169,7 +169,9 @@ class EVSimulation:
         self.ambient_temp = AMBIENT_TEMP
         self.emergency_shutdown = False
         self._cooling_poll_ticks = 0
-        self._cooling_poll_every = int(COOLING_POLL_INTERVAL / DT)  # 5s / 0.05s = 100 ticks
+        self._cooling_poll_every = int(COOLING_POLL_INTERVAL / DT)
+        self.last_power_kw = 0.0
+        self._efficiency_window = int(30.0 / DT)  # 30s rolling average for kWh/100km
         
         self.print_parameters()
 
@@ -309,6 +311,19 @@ class EVSimulation:
         self.battery_energy -= electrical_draw * DT
         self.battery_energy += regen_returned * DT
         self.battery_energy  = min(self.battery_energy, BATTERY_CAPACITY)  # cap at full
+        self.last_power_kw = (electrical_draw - regen_returned) / 1000.0
+        # kWh/100km = avg(kW) / avg(km/h) * 100  — stored as running sums for rolling window
+        self._eff_power_sum  = getattr(self, '_eff_power_sum',  0.0) + max(0.0, self.last_power_kw)
+        self._eff_speed_sum  = getattr(self, '_eff_speed_sum',  0.0) + (v * 3.6)
+        self._eff_ticks      = getattr(self, '_eff_ticks',      0)   + 1
+        if self._eff_ticks > self._efficiency_window:
+            # drop oldest sample — approximate with decay instead of full deque for simplicity
+            self._eff_power_sum *= (self._efficiency_window / (self._efficiency_window + 1))
+            self._eff_speed_sum *= (self._efficiency_window / (self._efficiency_window + 1))
+            self._eff_ticks      = self._efficiency_window
+        avg_speed = self._eff_speed_sum / max(1, self._eff_ticks)
+        avg_power = self._eff_power_sum / max(1, self._eff_ticks)
+        self.last_efficiency_kwh100 = (avg_power / avg_speed * 100) if avg_speed > 2.0 else None
         self.distance += self.speed * DT
 
         return (self.speed * 3.6, self.battery_energy / 3600000, self.distance / 1000,
@@ -365,6 +380,27 @@ class EVGUI:
         self.battery_ui.pack(anchor="w")
         self.dist_ui = ttk.Label(left, text="Distance: 0.000 km")
         self.dist_ui.pack(anchor="w")
+
+        # Power diagram
+        CHART_W, CHART_H = 300, 80
+        HISTORY_TICKS = int(60.0 / DT)  # 1200 ticks = 60 seconds
+        self._power_history = [0.0] * HISTORY_TICKS
+        self._chart_w = CHART_W
+        self._chart_h = CHART_H
+        self._history_ticks = HISTORY_TICKS
+        self._max_kw = MAX_POWER / 1000.0  # 220 kW scale
+
+        power_frame = ttk.LabelFrame(left, text="Power (kW)  ■ consume  ■ regen", style="Param.TLabelframe")
+        power_frame.pack(fill="x", pady=(8, 0))
+        self.power_label = ttk.Label(power_frame, text="Now:   0.0 kW", font=("Courier", 11, "bold"))
+        self.power_label.pack(anchor="w", padx=6)
+        self.power_canvas = tk.Canvas(power_frame, width=CHART_W, height=CHART_H,
+                                      bg="#111111", highlightthickness=0)
+        self.power_canvas.pack(padx=6, pady=(0, 6))
+        # zero line
+        self._zero_y = CHART_H // 2
+        self.power_canvas.create_line(0, self._zero_y, CHART_W, self._zero_y,
+                                      fill="#444444", width=1)
 
         self.emergency_ui = ttk.Label(left, text="✓ System Normal",
                                       foreground="green", font=("Helvetica", 12, "bold"))
@@ -495,6 +531,39 @@ class EVGUI:
         self.speed_ui.config(text=f"{speed_kmh:.1f} km/h")
         self.battery_ui.config(text=f"Battery: {kwh_left:.2f} kWh")
         self.dist_ui.config(text=f"Distance: {dist_km:.3f} km")
+
+        # Power chart update
+        kw = self.sim.last_power_kw
+        self._power_history.append(kw)
+        if len(self._power_history) > self._history_ticks:
+            self._power_history.pop(0)
+
+        eff = self.sim.last_efficiency_kwh100
+        eff_str = f"{eff:.1f} kWh/100km" if eff is not None else "-- kWh/100km"
+        self.power_label.config(
+            text=f"Now: {kw:+7.1f} kW    {eff_str}",
+            foreground="#00cc44" if kw < 0 else "#ff6600")
+
+        # Redraw chart — one vertical bar per pixel column
+        c = self.power_canvas
+        c.delete("bar")
+        W, H = self._chart_w, self._chart_h
+        z = self._zero_y
+        n = len(self._power_history)
+        step = max(1, n // W)  # samples per pixel
+        for px in range(W):
+            idx = int(px * n / W)
+            val = self._power_history[min(idx, n - 1)]
+            # clamp to scale
+            ratio = max(-1.0, min(1.0, val / self._max_kw))
+            y = z - int(ratio * z)  # above zero = consume, below = regen
+            if val >= 0:
+                color = "#cc3300" if val > self._max_kw * 0.8 else "#ff6600"
+                c.create_line(px, z, px, y, fill=color, tags="bar")
+            else:
+                c.create_line(px, z, px, y, fill="#00aa44", tags="bar")
+        # redraw zero line on top
+        c.create_line(0, z, W, z, fill="#444444", width=1, tags="bar")
 
         def temp_color(t, normal_max, emergency_max):
             if t > emergency_max:  return "red"
