@@ -3,6 +3,8 @@ from tkinter import ttk
 import os
 import threading
 import time
+import math
+from PIL import Image, ImageTk
 from dataclasses import dataclass, field
 from typing import Optional
 from collections import deque
@@ -29,9 +31,9 @@ ROLLING_RESIST_COEFF = 0.012 # Typical EV Low-Rolling Resistance tires
 #   Motor:    bearing limit 130°C  × 0.8 → 105°C
 #   Inverter: SiC MOSFET limit 150°C × 0.8 → 120°C
 #   Battery:  cell limit 60°C      × 0.8 →  50°C
-MOTOR_TEMP_NORMAL    = (0,   80)
-MOTOR_TEMP_OPTIMAL   = (40,  60)
-MOTOR_TEMP_EMERGENCY = (-20, 105)
+MOTOR_TEMP_NORMAL    = (0,   120)
+MOTOR_TEMP_OPTIMAL   = (40,  80)
+MOTOR_TEMP_EMERGENCY = (-20, 140)
 BATTERY_TEMP_NORMAL  = (15,  40)
 BATTERY_TEMP_OPTIMAL = (20,  35)
 BATTERY_TEMP_EMERGENCY = (-10, 50)
@@ -86,7 +88,8 @@ INVERTER_K_SWITCH = 0.03    # switching loss coefficient
 BATTERY_R_INTERNAL = 0.042  # Ω  Tesla M3 75kWh: 96s×46p, cell IR≈20mΩ → 96*(20mΩ/46)=0.042Ω
 BATTERY_V_NOMINAL = 400.0   # V  nominal pack voltage
 
-COOLING_POLL_INTERVAL = 5.0  # seconds between cooling state updates
+THERMAL_DERATE_FACTOR = 0.70  # max torque multiplier when any device exceeds normal_max
+COOLING_POLL_INTERVAL = 5.0   # seconds between cooling state updates
 class CoolingAction:
     LIQUID_WARM = -1
     NONE = 0
@@ -161,8 +164,9 @@ class EVSimulation:
     def __init__(self):
         self.speed = 0.0  # m/s
         self.battery_energy = BATTERY_CAPACITY
-        self.throttle = 0.0
-        self.brake    = 0.0
+        self.throttle  = 0.0
+        self.brake     = 0.0
+        self.gradient  = 0.0  # road gradient in degrees, positive = uphill
         self.distance = 0.0 # meters
 
         # Thermal system
@@ -173,6 +177,7 @@ class EVSimulation:
         self.coolant_bat = CoolantLoop(AMBIENT_TEMP, COOLANT_BAT_THERMAL_MASS, COOLANT_BAT_RADIATOR_H)
         self.ambient_temp = AMBIENT_TEMP
         self.emergency_shutdown = False
+        self.thermal_derate = False  # True when any device above normal_max
         self._cooling_poll_ticks = 0
         self._cooling_poll_every = int(COOLING_POLL_INTERVAL / DT)
         self.last_power_kw = 0.0
@@ -216,7 +221,8 @@ class EVSimulation:
             applied_torque = 0
             throttle_used = 0
         else:
-            throttle_used = self.throttle
+            derate = THERMAL_DERATE_FACTOR if self.thermal_derate else 1.0
+            throttle_used = self.throttle * derate
         
         v = self.speed
         speed_kmh = v * 3.6
@@ -244,6 +250,9 @@ class EVSimulation:
         rolling_force = ROLLING_RESIST_COEFF * MASS * GRAVITY
         engine_force  = applied_torque / WHEEL_RADIUS
 
+        # Road gradient: F = m*g*sin(angle),  positive = uphill resistance
+        gradient_force = MASS * GRAVITY * math.sin(math.radians(self.gradient))
+
         # --- BRAKING ---
         brake_used = self.brake if not self.emergency_shutdown else 0.0
         regen_fraction = min(brake_used, 0.5) / 0.5        # 0.0-1.0 over first half of pedal
@@ -253,7 +262,7 @@ class EVSimulation:
         regen_force   = regen_torque / WHEEL_RADIUS
         mech_brake_force = mech_fraction * MECH_BRAKE_DECEL * MASS
 
-        net_force = engine_force - drag_force - rolling_force - regen_force - mech_brake_force
+        net_force = engine_force - drag_force - rolling_force - regen_force - mech_brake_force - gradient_force
 
         acceleration = net_force / MASS
         self.speed = max(0.0, self.speed + acceleration * DT)
@@ -309,8 +318,13 @@ class EVSimulation:
             battery_emergency  = self.battery_thermal.choose_cooling_action(speed_kmh)
             if motor_emergency or inverter_emergency or battery_emergency:
                 self.emergency_shutdown = True
+                self.thermal_derate = False
             else:
                 self.emergency_shutdown = False
+                self.thermal_derate = (
+                    self.motor_thermal.temperature    > MOTOR_TEMP_NORMAL[1] or
+                    self.inverter_thermal.temperature > INVERTER_TEMP_NORMAL[1] or
+                    self.battery_thermal.temperature  > BATTERY_TEMP_NORMAL[1])
         
         # Battery energy drain
         self.battery_energy -= electrical_draw * DT
@@ -352,6 +366,7 @@ class EVSimulation:
                 state.coolant_pt_temp = result[6]
                 state.coolant_bat_temp= result[7]
                 state.emergency       = result[8]
+                state.thermal_derate  = self.thermal_derate
                 state.power_kw        = self.last_power_kw
                 state.efficiency      = self.last_efficiency_kwh100
                 state.motor_action    = self.motor_thermal.cooling_action
@@ -374,6 +389,7 @@ class SimState:
     coolant_pt_temp:  float = AMBIENT_TEMP
     coolant_bat_temp: float = AMBIENT_TEMP
     emergency:        bool  = False
+    thermal_derate:   bool  = False
     power_kw:         float = 0.0
     efficiency:       Optional[float] = None
     motor_action:     int   = 0
@@ -476,6 +492,59 @@ class EVGUI:
         ttk.Scale(right, from_=-20.0, to=50.0, orient="horizontal",
                   variable=self.ambient_var, command=self.on_ambient_change).pack(fill="x")
 
+        # ── Gradient selector: vertical swiper + PIL-rotated car image ───────────
+        grad_frame = ttk.LabelFrame(right, text="Road Gradient", style="Param.TLabelframe")
+        grad_frame.pack(fill="x", pady=(8, 0))
+
+        GCANV_W, GCANV_H = 310, 130
+        self._grad_cx, self._grad_cy = GCANV_W // 2, GCANV_H // 2
+
+        # Vertical swiper strip on the left
+        SWIPE_W = 22
+        self._swipe_canvas = tk.Canvas(grad_frame, width=SWIPE_W, height=GCANV_H,
+                                       bg="#111", highlightthickness=1,
+                                       highlightbackground="#444")
+        self._swipe_canvas.pack(side="left", padx=(6, 4), pady=6)
+        # Track line
+        self._swipe_canvas.create_line(SWIPE_W//2, 8, SWIPE_W//2, GCANV_H-8,
+                                       fill="#444", width=2)
+        # Center notch
+        self._swipe_canvas.create_line(4, GCANV_H//2, SWIPE_W-4, GCANV_H//2,
+                                       fill="#666", width=1)
+        # Thumb handle
+        ty = GCANV_H // 2
+        self._swipe_thumb = self._swipe_canvas.create_rectangle(
+            3, ty-10, SWIPE_W-3, ty+10, fill="#2255aa", outline="#5588ff", width=1)
+        self._swipe_canvas.create_text(SWIPE_W//2, 4,  anchor="n", text="▲",
+                                       fill="#5588ff", font=("Helvetica", 7))
+        self._swipe_canvas.create_text(SWIPE_W//2, GCANV_H-4, anchor="s", text="▼",
+                                       fill="#5588ff", font=("Helvetica", 7))
+        self._swipe_canvas.bind("<B1-Motion>",    self._on_grad_drag)
+        self._swipe_canvas.bind("<ButtonPress-1>", self._on_grad_drag)
+        self._swipe_h = GCANV_H
+        self._swipe_w = SWIPE_W
+
+        # Car image canvas
+        self._grad_canvas = tk.Canvas(grad_frame, width=GCANV_W, height=GCANV_H,
+                                      bg="white", highlightthickness=1,
+                                      highlightbackground="#cccccc")
+        self._grad_canvas.pack(side="left", pady=6)
+
+        # Load + crop car image with PIL
+        img_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "powertrain_scheme2.png")
+        self._grad_pil_base = Image.open(img_path).crop((0, 10, 1511, 695)) \
+                                   .resize((GCANV_W, GCANV_H), Image.LANCZOS)
+        self._grad_img_item = self._grad_canvas.create_image(
+            self._grad_cx, self._grad_cy, anchor="center")
+        self._grad_last_pct = 0.0
+        self._update_grad_image(0.0)
+
+        # Label
+        self.gradient_label = ttk.Label(grad_frame, text=" +0.0%\n  flat",
+                                        font=("Courier", 11, "bold"), width=10)
+        self.gradient_label.pack(side="left", padx=8)
+
         # Component temps
         temps_frame = ttk.LabelFrame(right, text="Temperatures", style="Param.TLabelframe")
         temps_frame.pack(fill="x", pady=8)
@@ -573,6 +642,40 @@ class EVGUI:
             mode = f"regen 100% + disk {mech_pct:.0f}%"
         self.brake_label.config(text=f"Brake: {val*100:.0f}%  [{mode}]")
 
+    def _update_grad_image(self, pct):
+        """Rotate PIL image by gradient angle on white background and update canvas."""
+        angle_deg = math.degrees(math.atan(pct / 100.0))
+        # Paste car onto white background before rotating so corners are white not black
+        bg = Image.new("RGB", self._grad_pil_base.size, (255, 255, 255))
+        bg.paste(self._grad_pil_base, (0, 0))
+        rotated = bg.rotate(-angle_deg, resample=Image.BICUBIC, expand=False,
+                            fillcolor=(255, 255, 255))
+        self._grad_tk_img = ImageTk.PhotoImage(rotated)
+        self._grad_canvas.itemconfig(self._grad_img_item, image=self._grad_tk_img)
+
+    def _on_grad_drag(self, event):
+        """Map vertical swiper position to gradient %: center=0, top=+20, bottom=-20."""
+        half = self._swipe_h // 2
+        pct = -(event.y - half) / half * 20.0   # up = positive = uphill
+        pct = max(-20.0, min(20.0, pct))
+        # Move thumb
+        ty = max(10, min(self._swipe_h - 10, event.y))
+        self._swipe_canvas.coords(self._swipe_thumb, 3, ty-10, self._swipe_w-3, ty+10)
+        self._apply_gradient(pct)
+
+    def on_gradient_change(self, _):
+        self._apply_gradient(self._grad_last_pct)
+
+    def _apply_gradient(self, pct):
+        self._grad_last_pct = pct
+        angle_deg = math.degrees(math.atan(pct / 100.0))
+        self.sim.gradient = angle_deg
+        self._update_grad_image(pct)
+        if pct > 0.1:    desc = "uphill"
+        elif pct < -0.1: desc = "downhill"
+        else:            desc = "flat"
+        self.gradient_label.config(text=f" {pct:+5.1f}%\n  {desc}")
+
     def on_ambient_change(self, _):
         ambient = self.ambient_var.get()
         self.sim.ambient_temp = ambient
@@ -656,6 +759,8 @@ class EVGUI:
 
         if emergency:
             self.emergency_ui.config(text="⚠ EMERGENCY SHUTDOWN", foreground="red")
+        elif s.thermal_derate:
+            self.emergency_ui.config(text="⚡ THERMAL DERATE  70%", foreground="orange")
         else:
             self.emergency_ui.config(text="✓ System Normal", foreground="green")
 
