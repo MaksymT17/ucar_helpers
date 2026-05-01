@@ -1,15 +1,11 @@
 1. Core Architectural Layout
-
     Body Style: Technical Notchback Sedan (3-box configuration).
-
     Structural Design: Fixed rear glass with a separate deck-lid (trunk). This maximizes torsional rigidity (>35,000 Nm/deg target) to handle high instantaneous motor torque.
 
     Dimensions: * Wheelbase: 2,800 mm (optimized for stability and interior volume).
-
         Ground Clearance: 170 mm (tailored for mixed-surface reliability and stewardship of the underbody).
 
     Mass Target: 1,800+ kg (Unladen/Kerb).
-
     Weight Distribution: 48/52 (Front/Rear) to optimize RWD traction and turn-in agility.
 
 2. Powertrain & Hardware (The Muscle)
