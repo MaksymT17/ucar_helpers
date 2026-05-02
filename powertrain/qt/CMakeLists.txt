@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(spdlog REQUIRED)
 
 add_executable(EVSimulationQt
     main.cpp
@@ -18,7 +19,10 @@ add_executable(EVSimulationQt
     powergraph.cpp
 )
 
-target_link_libraries(EVSimulationQt PRIVATE Qt6::Widgets)
+target_link_libraries(EVSimulationQt PRIVATE 
+    Qt6::Widgets 
+    spdlog::spdlog
+)
 
 if(WIN32)
     set_target_properties(EVSimulationQt PROPERTIES WIN32_EXECUTABLE TRUE)

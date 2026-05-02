@@ -7,8 +7,10 @@
 #include <QSlider>
 #include <QTimer>
 #include "powertrain_simulator.h"
+#include <QGridLayout>
 #include <QComboBox>
 #include "powergraph.h"
+#include <QCheckBox>
 
 class SpecViewer : public QMainWindow {
     Q_OBJECT
@@ -20,13 +22,24 @@ private slots:
     void onGradientChanged(int value);
     void onAmbientChanged(int value);
     void onSurfaceChanged(int index);
+    void onWindSpeedChanged(int value);
+    void onLowBeamToggled(bool checked);
+    void onHighBeamToggled(bool checked);
+    void onACToggled(bool checked);
+    void onACTempChanged(int value);
+    void onInfotainmentChanged(int value);
+    void onDriveModeChanged(int index);
     void updateSimulation();
 private:
     QVBoxLayout* setupSpecBox(); // Declaration for the helper method
     QVBoxLayout* setupGradientBox();
+    QVBoxLayout* setupWindSpeedBox();
     QVBoxLayout* setupSurfaceSelectionBox();
-    QVBoxLayout* setupTemperatureBox();
-    QVBoxLayout* setupCoolingStatusBox();
+    QVBoxLayout* setupAmbientTempBox();
+    QVBoxLayout* setupDriveModeBox();
+    QGridLayout* setupTemperatureBox();
+    QWidget* setupVisualThermalDisplay();
+    QVBoxLayout* setupCabinSystemsBox();
     EVPowertrainSimulator sim;
     QTimer *simTimer;
     PowerGraph *powerGraph;
@@ -43,12 +56,23 @@ private:
     QLabel *statusLabel;
     QSlider *throttleSlider;
     QSlider *brakeSlider;
+    
+    QCheckBox *lowBeamCheck;
+    QCheckBox *highBeamCheck;
+    QCheckBox *acCheck;
+    QSlider *acTempSlider;
+    QLabel *acTempLabel;
+    QSlider *infoSlider;
 
     QLabel *gradientImageLabel;
     QLabel *gradientValueLabel;
+    QLabel *gradientDescLabel;
     QSlider *gradientSlider;
     QComboBox *surfaceSelector;
+    QComboBox *driveModeSelector;
 
+    QLabel *windLabel;
+    QSlider *windSlider;
     QLabel *ambientLabel;
     QSlider *ambientSlider;
     QLabel *motorTempLabel;
@@ -60,6 +84,12 @@ private:
     QLabel *coolingMotorLabel;
     QLabel *coolingInverterLabel;
     QLabel *coolingBatteryLabel;
+
+    QLabel *visualMotorTemp;
+    QLabel *visualInverterTemp;
+    QLabel *visualBatteryTemp;
+    QLabel *visualCoolantMILabel;
+    QLabel *visualCoolantBatLabel;
 
     void addSpecRow(QVBoxLayout *layout, QString name, QString value);
     QString getTempColor(double t, double normalMax, double emergencyMax);
