@@ -5,14 +5,15 @@ This document summarizes the technical architecture and logic for the EV Powertr
 ## 1. Project Architecture
 The project evolved from a Python/Tkinter prototype to a high-performance C++/Qt6 application.
 
-- **Python Version**: Uses `threading` and `Lock` for a dedicated physics loop at 50ms (20Hz). GUI uses `tkinter` and `PIL` for car image rotations.
-- **C++ Version**: Uses a `QTimer` driven main loop (20Hz) in the GUI thread. The logic is encapsulated in `EVPowertrainSimulator`, and the UI in `SpecViewer`.
+- **Python Version**: Research prototype using `threading` for a 20Hz physics loop.
+- **C++ Version**: Production core using `EVPowertrainSimulator`. It models the full **Powertrain** (Battery -> Inverter -> Motor) and the resulting **Drivetrain** forces.
 
 ## 2. Physics Engine (`EVPowertrainSimulator`)
 The simulation calculates real-time dynamics based on a Tesla Model 3 RWD reference.
 
-### Propulsion & Power Management
-- **Power Budgeting**: The total battery discharge limit is shared between the motor and auxiliary systems (AC, Lights, Infotainment). Mechanical power is capped by the remaining "net" battery capacity.
+### Propulsion & Energy Flow
+- **Energy Path**: Battery DC -> Inverter AC -> Motor Torque -> Drivetrain Gear Reduction -> Wheel Force.
+- **Power Budgeting**: Total battery discharge is shared between propulsion and auxiliary systems (AC, Lights, Infotainment).
 - **Drive Torque**: Constant torque region (up to 5000 RPM) at `3600 Nm` (wheel), followed by a constant power region limited by net battery power (nominal `210 kW`).
 - **Efficiency Models**: 
   - **Motor**: Dynamic efficiency based on Copper losses (load-dependent) and Iron losses (RPM-dependent). Base η = 0.95.

@@ -1,6 +1,9 @@
 #include <QApplication>
 #include <QPalette>
 #include <QStyleFactory>
+#include <QPainter>
+#include <QPainterPath>
+#include <QIcon>
 #include "specviewer.h"
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -19,6 +22,27 @@ int main(int argc, char *argv[]) {
     spdlog::set_level(spdlog::level::info);
 
     spdlog::info("EVPowertrain Simulation Engine Starting...");
+
+    // Create a rounded macOS-style icon
+    QPixmap basePix("/Users/mba23/projects/ucar_helpers/powertrain/app_icon.jpg");
+    QIcon appIcon;
+    if (!basePix.isNull()) {
+        int side = std::min(basePix.width(), basePix.height());
+        QPixmap square = basePix.copy((basePix.width() - side) / 2, (basePix.height() - side) / 2, side, side);
+        
+        QPixmap rounded(side, side);
+        rounded.fill(Qt::transparent);
+        QPainter painter(&rounded);
+        painter.setRenderHint(QPainter::Antialiasing);
+        QPainterPath path;
+        path.addRoundedRect(0, 0, side, side, side * 0.22, side * 0.22); // macOS Squircle ratio
+        painter.setClipPath(path);
+        painter.drawPixmap(0, 0, square);
+        appIcon = QIcon(rounded);
+    }
+
+    // Set the application-wide icon (visible in taskbar/dock)
+    a.setWindowIcon(appIcon);
 
     // Set a high-tech dark theme globally
     a.setStyle(QStyleFactory::create("Fusion"));

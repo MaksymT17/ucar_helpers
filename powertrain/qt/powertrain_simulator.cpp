@@ -36,14 +36,14 @@ void EVPowertrainSimulator::update(double dt) {
     double propulsion_limit = std::max(0.0, available_battery_power * 0.94);
 
     // Slew Rate Limiter: 3.0s for 0.3 power change (100% -> 70%) -> 0.1 units/sec
-    double maxStep = 0.1 * dt; 
+    double maxStep = 0.1 * dt;
     static double smoothLimit = 1.0; 
     if (smoothLimit < modeMultiplier)
         smoothLimit = std::min(modeMultiplier, smoothLimit + maxStep);
     else if (smoothLimit > modeMultiplier)
         smoothLimit = std::max(modeMultiplier, smoothLimit - maxStep);
 
-    double powerLimit = smoothLimit;
+    double powerLimit = smoothLimit; // Apply the slew-rate limited power factor
 
     // 1. Calculate Drive Torque (Constant Torque -> Constant Power)
     double angular_vel = speed / wheelRadius;
@@ -176,11 +176,11 @@ void EVPowertrainSimulator::update(double dt) {
         updateDeviceCooling(batteryTemp, BAT_OPTIMAL_MAX, BAT_NORMAL_MAX, batteryAction);
 
         // Emergency if too hot OR too cold
-        bool wantsEmergency = (motorTemp > MOTOR_CRITICAL || motorTemp < MOTOR_COLD_LIMIT ||
-                               inverterTemp > INV_CRITICAL || inverterTemp < INV_COLD_LIMIT ||
-                               batteryTemp > BAT_CRITICAL || batteryTemp < BAT_COLD_LIMIT);
+        bool wantsEmergency = (motorTemp > MOTOR_CRITICAL || motorTemp < MOTOR_COLD_LIMIT || // Motor too hot or too cold
+                               inverterTemp > INV_CRITICAL || inverterTemp < INV_COLD_LIMIT || // Inverter too hot or too cold
+                               batteryTemp > BAT_CRITICAL || batteryTemp < BAT_COLD_LIMIT);   // Battery too hot or too cold
         
-        if (wantsEmergency && !emergencyShutdown) {
+        if (wantsEmergency && !emergencyShutdown) { // Only log on transition to emergency
             if (motorTemp > MOTOR_CRITICAL) spdlog::critical("Emergency Shutdown: Motor Overheat ({} C)", motorTemp);
             if (inverterTemp > INV_CRITICAL) spdlog::critical("Emergency Shutdown: Inverter Overheat ({} C)", inverterTemp);
             if (batteryTemp > BAT_CRITICAL) spdlog::critical("Emergency Shutdown: Battery Overheat ({} C)", batteryTemp);
@@ -234,10 +234,8 @@ void EVPowertrainSimulator::updateDeviceCooling(double temp, double optimalMax, 
         // Within normal range, but above optimal.
         // If currently in an active cooling state (ACTIVE_FAN, LIQUID_COLD), de-escalate to TURNED_OFF.
         // If already TURNED_OFF or LIQUID_WARM, stay there.
-        if (action == CoolingAction::ACTIVE_FAN || action == CoolingAction::LIQUID_COLD) {
-            action = CoolingAction::TURNED_OFF;
-        }
-    } else { // temp > normalMax
+        action = CoolingAction::TURNED_OFF; // No active cooling needed in normal range
+    } else { // temp > normalMax (Escalate)
         // Escalate cooling
         if (action == CoolingAction::TURNED_OFF) {
             action = CoolingAction::ACTIVE_FAN;
@@ -298,5 +296,5 @@ void EVPowertrainSimulator::setDriveMode(int index) {
         case DriveMode::NORMAL:   driveModeLimit = 0.75; break;
         case DriveMode::SPORT:    driveModeLimit = 1.0; break;
     }
-    // Force re-calculation of slew rate towards new limit
+    // Slew rate limiter will smoothly transition to this new driveModeLimit
 }

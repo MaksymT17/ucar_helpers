@@ -11,6 +11,30 @@
 #include <QComboBox>
 #include "powergraph.h"
 #include <QCheckBox>
+#include <QPainter>
+#include <QTimer>
+
+class WindFlowWidget : public QWidget {
+    Q_OBJECT
+public:
+    explicit WindFlowWidget(QWidget *parent = nullptr);
+    void setBasePixmap(const QPixmap &pix);
+    void setVelocity(double v); // Relative air velocity in m/s
+    void updateRotation(double angleDeg);
+    
+protected:
+    void paintEvent(QPaintEvent *event) override;
+
+private:
+    QPixmap basePixmap;
+    QPixmap rotatedPixmap;
+    double velocity = 0.0;
+    double angle = 0.0;
+    double offset = 0.0;
+    QTimer *animTimer; // Timer for animation updates
+    struct Line { double x, y, len, speed; };
+    QList<Line> lines;
+};
 
 class SpecViewer : public QMainWindow {
     Q_OBJECT
@@ -64,7 +88,7 @@ private:
     QLabel *acTempLabel;
     QSlider *infoSlider;
 
-    QLabel *gradientImageLabel;
+    WindFlowWidget *gradientDisplay;
     QLabel *gradientValueLabel;
     QLabel *gradientDescLabel;
     QSlider *gradientSlider;

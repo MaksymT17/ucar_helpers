@@ -28,10 +28,17 @@ void PowerGraph::paintEvent(QPaintEvent *event) {
     int h = height();
     int midY = h / 2;
 
-    // Use a solid line for zero reference to avoid dash artifacts peeking through gaps
-    painter.setPen(QPen(QColor(45, 45, 45), 1, Qt::SolidLine));
-    painter.drawLine(0, midY, w, midY);
+    // Draw subtle grid lines (every 50 kW)
+    painter.setPen(QPen(QColor(30, 30, 30), 1, Qt::SolidLine));
+    for (double kw = 50; kw < maxPowerKw; kw += 50) {
+        int yOffset = static_cast<int>((kw / maxPowerKw) * midY);
+        painter.drawLine(0, midY - yOffset, w, midY - yOffset); // Positive grid
+        painter.drawLine(0, midY + yOffset, w, midY + yOffset); // Negative grid
+    }
 
+    // Draw zero reference line with a slight glow
+    painter.setPen(QPen(QColor(80, 80, 80), 1, Qt::SolidLine));
+    painter.drawLine(0, midY, w, midY);
     if (history.empty()) return;
 
     double xStep = (double)w / maxHistory;
@@ -55,15 +62,27 @@ void PowerGraph::paintEvent(QPaintEvent *event) {
         double xPos = (double)w - ((double)(history.size() - i) * xStep);
         double barWidth = xStep + 0.2; 
         
-        QColor color;
         if (val >= 0) {
             // Consumption: Dynamic Orange to Red
-            color = (val > maxPowerKw * 0.8) ? QColor(255, 50, 0) : QColor(255, 140, 0);
-            painter.fillRect(QRectF(xPos, midY - barHeight, barWidth, barHeight), color);
+            QLinearGradient grad(xPos, midY - barHeight, xPos, midY);
+            if (val > maxPowerKw * 0.8) {
+                grad.setColorAt(0, QColor(255, 50, 0));
+                grad.setColorAt(1, QColor(150, 20, 0));
+            } else {
+                grad.setColorAt(0, QColor(255, 140, 0));
+                grad.setColorAt(1, QColor(180, 80, 0));
+            }
+            painter.fillRect(QRectF(xPos, midY - barHeight, barWidth, barHeight), grad);
         } else {
             // Regen: Electric Green
-            color = QColor(0, 255, 150);
-            painter.fillRect(QRectF(xPos, midY, barWidth, std::abs(barHeight)), color);
+            QLinearGradient grad(xPos, midY, xPos, midY + std::abs(barHeight));
+            grad.setColorAt(0, QColor(0, 255, 150));
+            grad.setColorAt(1, QColor(0, 100, 60));
+            painter.fillRect(QRectF(xPos, midY, barWidth, std::abs(barHeight)), grad);
         }
     }
+    
+    // Draw a subtle border around the graph
+    painter.setPen(QPen(QColor(60, 60, 60), 1));
+    painter.drawRect(0, 0, w - 1, h - 1);
 }

@@ -1,12 +1,92 @@
+#include <QApplication>
+#include <QApplication>
+#include <QIcon>
+#include <QPainter>
+#include <QPainterPath>
 #include <QFont>
 #include <QLabel>
 #include <QHBoxLayout>
 #include <QGroupBox>
 #include "specviewer.h"
 #include <spdlog/spdlog.h>
+#include <cmath>
+#include <cstdlib>
+
+WindFlowWidget::WindFlowWidget(QWidget *parent) : QWidget(parent) {
+    setFixedSize(310, 130);
+    setStyleSheet("background-color: black; border: 1px solid #333;");
+    
+    animTimer = new QTimer(this);
+    connect(animTimer, &QTimer::timeout, this, [this]() {
+        if (std::abs(velocity) > 0.1) {
+            // Adjust visual displacement speed relative to airflow
+            offset += velocity * 0.4;
+            update();
+        }
+    });
+    animTimer->start(30); // ~33 FPS
+
+    // Generate semi-random flow lines (reproducible seed for visual stability)
+    srand(42);
+    for (int i = 0; i < 60; ++i) { // Increased pool for higher density for more dynamic scaling
+        lines.append({ (double)(rand() % 500 - 100), (double)(rand() % 200 - 35),
+                       (double)(20 + rand() % 50), 0.8 + (rand() % 100 / 100.0) });
+    }
+}
+
+void WindFlowWidget::setBasePixmap(const QPixmap &pix) { 
+    basePixmap = pix; 
+    updateRotation(0); 
+}
+
+void WindFlowWidget::setVelocity(double v) { velocity = v; }
+
+void WindFlowWidget::updateRotation(double angleDeg) {
+    angle = angleDeg;
+    QTransform trans;
+    trans.rotate(angle);
+    rotatedPixmap = basePixmap.transformed(trans, Qt::SmoothTransformation);
+    update();
+}
+
+void WindFlowWidget::paintEvent(QPaintEvent *) {
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    
+    if (!rotatedPixmap.isNull()) {
+        p.drawPixmap((width() - rotatedPixmap.width()) / 2, (height() - rotatedPixmap.height()) / 2, rotatedPixmap);
+    }
+    // Only draw lines if there's significant airflow
+    if (std::abs(velocity) < 0.5) return;
+
+    // Dynamically calculate how many lines to show based on wind strength
+    // Base of 8 lines, adding more as velocity increases
+    int visibleLineCount = std::clamp(static_cast<int>(8 + std::abs(velocity) * 1.5), 8, static_cast<int>(lines.size()));
+
+    p.save();
+    // Rotate the coordinate system around the center to match the car's gradient
+    p.translate(width() / 2.0, height() / 2.0);
+    p.rotate(angle);
+    p.translate(-width() / 2.0, -height() / 2.0);
+
+    // Use a slightly larger virtual width for wrapping to account for rotation tilt
+    double virtualWidth = width() + 100.0;
+
+    p.setPen(QPen(QColor(0, 210, 255, 75), 1)); // Cyan, translucent
+    for (int i = 0; i < visibleLineCount; ++i) {
+        double x = fmod(lines[i].x + offset * lines[i].speed, virtualWidth);
+        if (x < -50.0) x += virtualWidth; // Wrap around for continuous animation
+        
+        p.drawLine(QPointF(x, lines[i].y), QPointF(x + lines[i].len, lines[i].y));
+    }
+    p.restore();
+}
 
 SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     setWindowTitle("EV Prototype - Dashboard [C++]");
+    // Sync window icon with the global application icon
+    setWindowIcon(qApp->windowIcon()); // Use the globally set squircle icon
+    
     setMinimumSize(1150, 900); // Increased width to accommodate extra spacing
 
     QWidget *centralWidget = new QWidget(this);
@@ -16,24 +96,35 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
 
     // Load the car image for the gradient display
     QString imgPath = "/Users/mba23/projects/ucar_helpers/powertrain/powertrain_scheme2.png";
-    baseCarPixmap = QPixmap(imgPath).scaled(300, 120, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    baseCarPixmap = QPixmap(imgPath).scaled(300, 120, Qt::KeepAspectRatio, Qt::SmoothTransformation); // Scaled for the WindFlowWidget
 
     // --- LEFT COLUMN: Controls & Motion ---
+    QString sliderStyle = // Base style for all horizontal sliders
+        "QSlider::groove:horizontal { border: 1px solid #333; height: 12px; background: #111; margin: 2px 0; border-radius: 6px; }"
+        "QSlider::handle:horizontal { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #555, stop:1 #222); border: 1px solid #777; width: 18px; margin: -5px 0; border-radius: 9px; }";
+
+    QString throttleHandleStyle = sliderStyle + "QSlider::sub-page:horizontal { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #332200, stop:1 #ff8800); border-radius: 6px; }";
+    QString brakeHandleStyle = sliderStyle + "QSlider::sub-page:horizontal { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #002211, stop:1 #00ff99); border-radius: 6px; }";
+
     QVBoxLayout *leftCol = new QVBoxLayout();
     leftCol->setContentsMargins(10, 10, 10, 10);
-
-    throttleLabel = new QLabel("Throttle: 0%");
+    // Throttle Slider
+    throttleLabel = new QLabel("ACCELERATION");
+    throttleLabel->setStyleSheet("color: #ff8800; font-weight: bold; font-size: 10px; text-transform: uppercase;");
     throttleSlider = new QSlider(Qt::Horizontal);
     throttleSlider->setRange(0, 100);
+    throttleSlider->setStyleSheet(throttleHandleStyle);
     connect(throttleSlider, &QSlider::valueChanged, this, &SpecViewer::onThrottleChanged);
-
-    brakeLabel = new QLabel("Brake: 0%");
+    // Brake Slider
+    brakeLabel = new QLabel("REGEN / BRAKING");
+    brakeLabel->setStyleSheet("color: #00ff99; font-weight: bold; font-size: 10px; text-transform: uppercase;");
     brakeSlider = new QSlider(Qt::Horizontal);
     brakeSlider->setRange(0, 100);
+    brakeSlider->setStyleSheet(brakeHandleStyle);
     connect(brakeSlider, &QSlider::valueChanged, this, &SpecViewer::onBrakeChanged);
-
+    // Speed Label
     speedLabel = new QLabel("0.0 km/h");
-    speedLabel->setStyleSheet("font-family: 'Courier'; font-size: 36px; font-weight: bold; color: #00ff99;");
+    speedLabel->setStyleSheet("font-family: 'Courier'; font-size: 42px; font-weight: bold; color: #00ff99; text-shadow: 0 0 10px #00ff99;");
     speedLabel->setAlignment(Qt::AlignCenter);
 
     batteryLabel = new QLabel("Battery: 75.00 kWh");
@@ -42,7 +133,7 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     coolingMotorLabel    = new QLabel("Motor:    NONE");
     coolingInverterLabel = new QLabel("Inverter: NONE");
     coolingBatteryLabel  = new QLabel("Battery:  NONE");
-
+    // Unified styling for telemetry labels
     // Unified compact styling for the Stats Grid
     QString statStyle = "color: #e0e0e0; font-family: 'Helvetica'; font-size: 12px;";
     batteryLabel->setStyleSheet(statStyle);
@@ -51,10 +142,10 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     coolingMotorLabel->setStyleSheet(statStyle);
     coolingInverterLabel->setStyleSheet(statStyle);
     coolingBatteryLabel->setStyleSheet(statStyle);
-
+    // Power Label
     powerLabel = new QLabel("--- kWh/100km");
     powerLabel->setStyleSheet("font-family: 'Courier'; font-weight: bold; color: #00ff99;");
-
+    // Status Label
     statusLabel = new QLabel("✓ System Normal");
     statusLabel->setStyleSheet("font-family: 'Helvetica'; font-size: 15px; font-weight: bold; color: #00ff44;");
     statusLabel->setContentsMargins(0, 2, 0, 5); // Reduced top padding for compactness
@@ -63,7 +154,7 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     powerFrame->setStyleSheet("QGroupBox { border: 1px solid #555; color: #00d1ff; font-weight: bold; margin-top: 10px; padding-top: 15px; }");
     QVBoxLayout *powerLayout = new QVBoxLayout(powerFrame);
 
-    powerGraph = new PowerGraph();
+    powerGraph = new PowerGraph(); // Custom PowerGraph widget
     powerLayout->addWidget(powerLabel);
     powerLayout->addWidget(powerGraph);
 
@@ -72,7 +163,7 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     leftCol->addWidget(brakeLabel);
     leftCol->addWidget(brakeSlider);
     leftCol->addSpacing(20);
-    leftCol->addWidget(speedLabel);
+    leftCol->addWidget(speedLabel); // Main speed display
     leftCol->addSpacing(5); // Compacted gap after speed
 
     // --- Stats Grid: Combined Telemetry & Cooling Status ---
@@ -83,7 +174,7 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     statsLayout->setVerticalSpacing(2);
     statsLayout->setHorizontalSpacing(15);
 
-    // Internal Headers
+    // Internal Headers for the stats grid
     QString headerStyle = "color: #555; font-weight: bold; font-size: 10px; text-transform: uppercase;";
     QLabel *statsHeader = new QLabel("Stats");
     statsHeader->setStyleSheet(headerStyle);
@@ -91,12 +182,12 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     coolingHeader->setStyleSheet(headerStyle);
 
     statsLayout->addWidget(statsHeader, 0, 0);
-    statsLayout->addWidget(coolingHeader, 0, 2);
+    statsLayout->addWidget(coolingHeader, 0, 2); // Cooling status header
 
     // Column 0: Telemetry
     statsLayout->addWidget(batteryLabel, 1, 0);
     statsLayout->addWidget(distLabel, 2, 0);
-    statsLayout->addWidget(timeLabel, 3, 0);
+    statsLayout->addWidget(timeLabel, 3, 0); // Trip time
 
     // Column 1: Vertical Separator (The "Semi-column")
     QFrame *sep = new QFrame();
@@ -105,7 +196,7 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     sep->setFixedWidth(1);
     statsLayout->addWidget(sep, 0, 1, 4, 1);
 
-    // Column 2: Cooling Status
+    // Column 2: Cooling Status for each component
     statsLayout->addWidget(coolingMotorLabel, 1, 2);
     statsLayout->addWidget(coolingInverterLabel, 2, 2);
     statsLayout->addWidget(coolingBatteryLabel, 3, 2);
@@ -121,7 +212,7 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
 
     // --- MIDDLE COLUMN: Thermal & Environment ---
     QVBoxLayout *midCol = new QVBoxLayout();
-    midCol->setContentsMargins(10, 10, 10, 10);
+    midCol->setContentsMargins(10, 10, 10, 10); // Padding for the middle column
     
     QLabel *thermalHeader = new QLabel("THERMAL MONITOR");
     thermalHeader->setFont(QFont("Verdana", 18, QFont::Bold));
@@ -132,7 +223,7 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     tempBox->setStyleSheet("QGroupBox { border: 1px solid #00d1ff; color: #00d1ff; font-weight: bold; margin-top: 10px; padding-top: 20px; }");
     QVBoxLayout *tempBoxLayout = new QVBoxLayout(tempBox);
     tempBoxLayout->setContentsMargins(5, 5, 5, 5);
-    tempBoxLayout->setAlignment(Qt::AlignHCenter);
+    tempBoxLayout->setAlignment(Qt::AlignHCenter); // Center the visual thermal display
 
     QWidget *thermalVisual = setupVisualThermalDisplay();
     tempBoxLayout->addWidget(thermalVisual);
@@ -141,7 +232,7 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     // Align GroupBox width perfectly with the embedded image width plus internal margins
     tempBox->setFixedWidth(thermalVisual->width() + 10);
 
-    midCol->addWidget(tempBox);
+    midCol->addWidget(tempBox); // Add the thermal monitor box to the middle column
     midCol->addStretch();
 
     mainLayout->addLayout(midCol, 0); // Stretch 0 forces column to match picture width
@@ -151,7 +242,7 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     QVBoxLayout *rightCol = new QVBoxLayout();
     QLabel *header = new QLabel("SYSTEM INFO");
     header->setFont(QFont("Verdana", 18, QFont::Bold));
-    rightCol->addWidget(header);
+    rightCol->addWidget(header); // System Info header
 
     rightCol->addLayout(setupSpecBox());
     rightCol->addLayout(setupSurfaceSelectionBox());
@@ -174,7 +265,7 @@ QVBoxLayout* SpecViewer::setupSpecBox() {
     QGroupBox *specBox = new QGroupBox("Unit Specifications");
     specBox->setStyleSheet("QGroupBox { border: 1px solid #00d1ff; color: #00d1ff; font-weight: bold; margin-top: 10px; padding-top: 15px; }");
     QVBoxLayout *specLayout = new QVBoxLayout(specBox);
-
+    // Add static specification rows
     addSpecRow(specLayout, "MASS", "1850 kg");
     addSpecRow(specLayout, "MAX_WHEEL_TORQUE", "3600 Nm");
     addSpecRow(specLayout, "MAX_POWER", "210000 W");
@@ -197,7 +288,7 @@ QVBoxLayout* SpecViewer::setupCabinSystemsBox() {
     // Lighting Section
     lowBeamCheck = new QCheckBox("Low Beam (100W)");
     highBeamCheck = new QCheckBox("High Beam (250W)");
-    lowBeamCheck->setStyleSheet("color: white;");
+    lowBeamCheck->setStyleSheet("color: white;"); // Styling for checkboxes
     highBeamCheck->setStyleSheet("color: white;");
     connect(lowBeamCheck, &QCheckBox::toggled, this, &SpecViewer::onLowBeamToggled);
     connect(highBeamCheck, &QCheckBox::toggled, this, &SpecViewer::onHighBeamToggled);
@@ -207,7 +298,7 @@ QVBoxLayout* SpecViewer::setupCabinSystemsBox() {
     acCheck->setStyleSheet("color: #00d1ff; font-weight: bold;");
     connect(acCheck, &QCheckBox::toggled, this, &SpecViewer::onACToggled);
 
-    acTempLabel = new QLabel("Target Temp: 22°C");
+    acTempLabel = new QLabel("Target Temp: 22°C"); // AC target temperature label
     acTempLabel->setStyleSheet("color: #aaa; font-size: 11px;");
     acTempSlider = new QSlider(Qt::Horizontal);
     acTempSlider->setRange(16, 30);
@@ -216,7 +307,7 @@ QVBoxLayout* SpecViewer::setupCabinSystemsBox() {
 
     // Infotainment Section
     QLabel *infoLabel = new QLabel("Computer/Infotainment Load");
-    infoLabel->setStyleSheet("color: #aaa; font-size: 11px; margin-top: 5px;");
+    infoLabel->setStyleSheet("color: #aaa; font-size: 11px; margin-top: 5px;"); // Infotainment label
     infoSlider = new QSlider(Qt::Horizontal);
     infoSlider->setRange(50, 500);
     infoSlider->setValue(150);
@@ -245,7 +336,7 @@ QVBoxLayout* SpecViewer::setupGradientBox() {
     QGroupBox *gradBox = new QGroupBox("Road Gradient");
     gradBox->setStyleSheet("QGroupBox { border: 1px solid #00d1ff; color: #00d1ff; font-weight: bold; margin-top: 10px; padding-top: 15px; }");
     
-    QHBoxLayout *hLayout = new QHBoxLayout(gradBox);
+    QHBoxLayout *hLayout = new QHBoxLayout(gradBox); // Layout for gradient box
     
     QVBoxLayout *imageAreaLayout = new QVBoxLayout();
     imageAreaLayout->setSpacing(5);
@@ -272,12 +363,9 @@ QVBoxLayout* SpecViewer::setupGradientBox() {
     );
 
     connect(gradientSlider, &QSlider::valueChanged, this, &SpecViewer::onGradientChanged);
-    
-    gradientImageLabel = new QLabel();
-    gradientImageLabel->setPixmap(baseCarPixmap);
-    gradientImageLabel->setFixedSize(310, 130);
-    gradientImageLabel->setAlignment(Qt::AlignCenter);
-    gradientImageLabel->setStyleSheet("background-color: black; border: 1px solid #333;");
+    // WindFlowWidget for animated gradient display
+    gradientDisplay = new WindFlowWidget();
+    gradientDisplay->setBasePixmap(baseCarPixmap);
 
     gradientDescLabel = new QLabel("FLAT");
     gradientDescLabel->setStyleSheet("font-family: 'Courier'; font-size: 13px; font-weight: bold; color: #00d1ff;");
@@ -293,7 +381,7 @@ QVBoxLayout* SpecViewer::setupGradientBox() {
     labelsLayout->addWidget(gradientDescLabel);
     labelsLayout->addWidget(gradientValueLabel);
 
-    imageAreaLayout->addWidget(gradientImageLabel);
+    imageAreaLayout->addWidget(gradientDisplay);
     imageAreaLayout->addLayout(labelsLayout);
 
     hLayout->addWidget(gradientSlider);
@@ -306,7 +394,7 @@ QVBoxLayout* SpecViewer::setupGradientBox() {
 QWidget* SpecViewer::setupVisualThermalDisplay() {
     QLabel *imgLabel = new QLabel();
     QPixmap topView("/Users/mba23/projects/ucar_helpers/powertrain/top_view.png");
-    
+    // Load and scale the top-view car image
     if (!topView.isNull()) {
         // Scale to height 702 (base 585 + 20%) for better visibility
         QPixmap scaled = topView.scaledToHeight(702, Qt::SmoothTransformation);
@@ -318,21 +406,21 @@ QWidget* SpecViewer::setupVisualThermalDisplay() {
         imgLabel->setStyleSheet("color: #444; border: 1px dashed #444;");
     }
     imgLabel->setAlignment(Qt::AlignCenter);
-
-    QString style = "font-weight: bold; font-size: 13px; background-color: rgba(0,0,0,180); border: 1px solid #00d1ff; border-radius: 3px; padding: 2px;";
-
+    // Base style for visual temperature labels
+    QString style = "font-weight: bold; font-family: 'Courier'; font-size: 12px; background-color: rgba(10,10,10,220); border: 1px solid #444; border-radius: 2px; padding: 2px;";
+    // Motor temperature overlay
     visualMotorTemp = new QLabel("M: 25.0°C", imgLabel);
     visualMotorTemp->setStyleSheet(style + "color: #00ff99;");
-    visualMotorTemp->move(138, 150); // Shifted right by 10% of image width (approx 33px)
-
+    visualMotorTemp->move(145, 150); 
+    // Inverter temperature overlay
     visualInverterTemp = new QLabel("I: 25.0°C", imgLabel);
     visualInverterTemp->setStyleSheet(style + "color: #00ff99;");
-    visualInverterTemp->move(202, 115); // Inverter area (shifted right)
-
+    visualInverterTemp->move(215, 115); 
+    // Battery temperature overlay
     visualBatteryTemp = new QLabel("BAT: 25.0°C", imgLabel);
     visualBatteryTemp->setStyleSheet(style + "color: #00ff99;");
     visualBatteryTemp->move(140, 335); // Center battery pack (shifted right)
-
+    // Coolant battery loop temperature overlay
     visualCoolantBatLabel = new QLabel("B-C: 25.0°C", imgLabel);
     visualCoolantBatLabel->setStyleSheet(style + "color: #00d1ff;");
     visualCoolantBatLabel->move(105, 560); // Centered under left reservoir
@@ -349,7 +437,7 @@ QVBoxLayout* SpecViewer::setupSurfaceSelectionBox() {
     QGroupBox *surfaceBox = new QGroupBox("Road Surface Type");
     surfaceBox->setStyleSheet("QGroupBox { border: 1px solid #00d1ff; color: #00d1ff; font-weight: bold; margin-top: 10px; padding-top: 15px; }");
     QVBoxLayout *surfaceLayout = new QVBoxLayout(surfaceBox);
-
+    // Surface type selector
     surfaceSelector = new QComboBox();
     surfaceSelector->addItem("Asphalt");
     surfaceSelector->addItem("Gravel");
@@ -367,7 +455,7 @@ QVBoxLayout* SpecViewer::setupDriveModeBox() {
     QGroupBox *modeBox = new QGroupBox("Driving Mode");
     modeBox->setStyleSheet("QGroupBox { border: 1px solid #00d1ff; color: #00d1ff; font-weight: bold; margin-top: 10px; padding-top: 15px; }");
     QVBoxLayout *layout = new QVBoxLayout(modeBox);
-
+    // Drive mode selector
     driveModeSelector = new QComboBox();
     driveModeSelector->addItem("Economic (50%)");
     driveModeSelector->addItem("Normal (75%)");
@@ -388,12 +476,12 @@ QVBoxLayout* SpecViewer::setupWindSpeedBox() {
     QGroupBox *windBox = new QGroupBox("Wind Speed Selector");
     windBox->setStyleSheet("QGroupBox { border: 1px solid #00d1ff; color: #00d1ff; font-weight: bold; margin-top: 10px; padding-top: 15px; }");
     QVBoxLayout *layout = new QVBoxLayout(windBox);
-
+    // Wind speed label
     windLabel = new QLabel("Wind: 0 m/s (Calm)");
     windLabel->setStyleSheet("color: #e0e0e0; font-family: 'Helvetica'; font-size: 13px;");
-
+    // Wind speed slider
     windSlider = new QSlider(Qt::Horizontal);
-    windSlider->setRange(-20, 20); // -20 (Headwind) to +20 (Tailwind)
+    windSlider->setRange(-20, 20); // Range from headwind to tailwind
     windSlider->setValue(0);
     windSlider->setTickPosition(QSlider::TicksBelow);
     windSlider->setTickInterval(5);
@@ -411,10 +499,10 @@ QVBoxLayout* SpecViewer::setupAmbientTempBox() {
     QGroupBox *ambBox = new QGroupBox("Ambient Temperature");
     ambBox->setStyleSheet("QGroupBox { border: 1px solid #00d1ff; color: #00d1ff; font-weight: bold; margin-top: 10px; padding-top: 15px; }");
     QVBoxLayout *layout = new QVBoxLayout(ambBox);
-
+    // Ambient temperature label
     ambientLabel = new QLabel("Ambient: 25.0°C");
     ambientLabel->setStyleSheet("color: #e0e0e0; font-family: 'Helvetica'; font-size: 13px;");
-
+    // Ambient temperature slider
     ambientSlider = new QSlider(Qt::Horizontal);
     ambientSlider->setRange(-20, 50);
     ambientSlider->setValue(25);
@@ -431,7 +519,7 @@ QGridLayout* SpecViewer::setupTemperatureBox() {
     grid->setHorizontalSpacing(15);
     grid->setColumnMinimumWidth(0, 135); // Fit "Coolant M/I: 00.0°C"
     grid->setColumnMinimumWidth(1, 125); // Fit "Inverter: 00.0°C"
-    QString style = "font-family: 'Courier'; font-size: 14px; font-weight: bold; background-color: black;";
+    QString style = "font-family: 'Courier'; font-size: 14px; font-weight: bold; background-color: black;"; // Styling for temperature labels
 
     coolantMILabel = new QLabel("Coolant M/I: 25.0°C");
     motorTempLabel = new QLabel("Motor:       25.0°C");
@@ -462,7 +550,7 @@ QGridLayout* SpecViewer::setupTemperatureBox() {
 void SpecViewer::addSpecRow(QVBoxLayout *layout, QString name, QString value) {
     QLabel *label = new QLabel(QString("%1: %2").arg(name).arg(value));
     label->setStyleSheet("color: #888888; font-family: 'Helvetica'; font-size: 13px;");
-    layout->addWidget(label);
+    layout->addWidget(label); // Add a specification row to the layout
 }
 
 void SpecViewer::onThrottleChanged(int value) {
@@ -473,7 +561,7 @@ void SpecViewer::onThrottleChanged(int value) {
     if (val > 0) {
         brakeSlider->setValue(0);
         sim.setBrake(0);
-    }
+    } // If throttle is applied, release brake
 }
 
 void SpecViewer::onBrakeChanged(int value) {
@@ -484,7 +572,7 @@ void SpecViewer::onBrakeChanged(int value) {
     if (val > 0) {
         throttleSlider->setValue(0);
         sim.setThrottle(0);
-    }
+    } // If brake is applied, release throttle
 }
 
 void SpecViewer::onGradientChanged(int value) {
@@ -493,16 +581,12 @@ void SpecViewer::onGradientChanged(int value) {
     sim.setGradient(angleDeg);
     spdlog::info("Environment: Road Gradient changed to {}%", pct);
 
-    // Rotate the image
-    QTransform trans; // Positive angleDeg should tilt nose up (counter-clockwise)
-    trans.rotate(angleDeg);
-    QPixmap rotated = baseCarPixmap.transformed(trans, Qt::SmoothTransformation);
-    gradientImageLabel->setPixmap(rotated);
+    gradientDisplay->updateRotation(angleDeg);
 
     QString desc;
     if (pct > 0.1)       desc = "UPHILL";
     else if (pct < -0.1) desc = "DOWNHILL";
-    else                 desc = "FLAT";
+    else                 desc = "FLAT"; // Determine gradient description
 
     gradientDescLabel->setText(desc);
 
@@ -524,7 +608,7 @@ void SpecViewer::onSurfaceChanged(int index) {
 void SpecViewer::onWindSpeedChanged(int value) {
     sim.setWindSpeed((double)value);
     QString desc = (value == 0) ? "Calm" : (value > 0 ? "Tailwind" : "Headwind");
-    windLabel->setText(QString("Wind: %1 m/s (%2)").arg(value).arg(desc));
+    windLabel->setText(QString("Wind: %1 m/s (%2)").arg(value).arg(desc)); // Update wind speed label
     spdlog::info("Environment: Wind Speed set to {} m/s ({})", value, desc.toStdString());
 }
 
@@ -532,7 +616,7 @@ void SpecViewer::onLowBeamToggled(bool checked) {
     sim.setLowBeams(checked);
     spdlog::info("Cabin: Low Beams {}", checked ? "ON" : "OFF");
     if (checked) highBeamCheck->setChecked(false);
-}
+    } // Ensure only one beam type is active
 
 void SpecViewer::onHighBeamToggled(bool checked) {
     sim.setHighBeams(checked);
@@ -543,7 +627,7 @@ void SpecViewer::onHighBeamToggled(bool checked) {
 void SpecViewer::onACToggled(bool checked) {
     sim.setACOn(checked);
     spdlog::info("Cabin: Air Conditioning {}", checked ? "Enabled" : "Disabled");
-}
+    } // Toggle AC
 
 void SpecViewer::onACTempChanged(int value) {
     sim.setACTargetTemp((double)value);
@@ -557,7 +641,7 @@ void SpecViewer::onInfotainmentChanged(int value) {
 void SpecViewer::onDriveModeChanged(int index) {
     sim.setDriveMode(index);
 }
-
+// Helper function to get color based on temperature thresholds
 QString SpecViewer::getTempColor(double t, double normalMax, double emergencyMax) {
     if (t > emergencyMax) return "color: red;";
     if (t > normalMax)    return "color: orange;";
@@ -568,13 +652,17 @@ void SpecViewer::updateSimulation() {
     sim.update(0.05); // Fixed DT 50ms
     
     speedLabel->setText(QString("%1 km/h").arg(sim.getSpeedKmh(), 0, 'f', 1));
-    batteryLabel->setText(QString("Battery: %1 kWh (%2%)").arg(sim.getBatteryKwh(), 0, 'f', 2).arg(sim.getSOC(), 0, 'f', 1));
+    batteryLabel->setText(QString("Battery: %1 kWh (%2%)").arg(sim.getBatteryKwh(), 0, 'f', 2).arg(sim.getSOC(), 0, 'f', 1)); // Update battery status
     distLabel->setText(QString("Distance: %1 km").arg(sim.getDistanceKm(), 0, 'f', 3));
     
+    // Update wind flow animation based on relative velocity
+    double v_rel = (sim.getSpeedKmh() / 3.6) - windSlider->value();
+    gradientDisplay->setVelocity(v_rel);
+
     // Feed real-time data to the graph
     powerGraph->addValue(sim.getPowerKw());
 
-    // Update power and efficiency labels
+    // Update power and efficiency labels based on simulation data
     double currentKw = sim.getPowerKw();
     double eff = sim.getEfficiency();
     
@@ -586,7 +674,7 @@ void SpecViewer::updateSimulation() {
 
     int t = (int)sim.getTripTime();
     timeLabel->setText(QString("Trip Time: %1:%2:%3").arg(t/3600, 2, 10, QChar('0')).arg((t%3600)/60, 2, 10, QChar('0')).arg(t%60, 2, 10, QChar('0')));
-
+    // Update overall status message and styling
     // Update Overall Status
     QString modeName;
     switch(sim.getDriveMode()) {
@@ -611,7 +699,7 @@ void SpecViewer::updateSimulation() {
         statusLabel->setStyleSheet("font-family: 'Helvetica'; font-size: 15px; font-weight: bold; color: #00ff44;");
     }
 
-    // Update Thermal Labels
+    // Update Thermal Labels with color coding
     QString baseStyle = "font-family: 'Courier'; font-size: 14px; font-weight: bold; background-color: black;";
     
     coolantMILabel->setText(QString("Coolant M/I: %1°C").arg(sim.getCoolantPTTemp(), 5, 'f', 1));
@@ -625,7 +713,7 @@ void SpecViewer::updateSimulation() {
     coolantBatLabel->setText(QString("Coolant Bat: %1°C").arg(sim.getCoolantBatTemp(), 5, 'f', 1));
     
     // Update Visual Overlays with color-coded temperatures
-    QString vStyle = "font-weight: bold; font-size: 13px; background-color: rgba(0,0,0,180); border: 1px solid #00d1ff; border-radius: 3px; padding: 2px;";
+    QString vStyle = "font-weight: bold; font-family: 'Courier'; font-size: 12px; background-color: rgba(10,10,10,220); border: 1px solid #444; border-radius: 2px; padding: 2px;";
     
     visualMotorTemp->setText(QString("M: %1°C").arg(sim.getMotorTemp(), 4, 'f', 1));
     visualMotorTemp->setStyleSheet(vStyle + getTempColor(sim.getMotorTemp(), 90.0, 140.0));
@@ -642,7 +730,7 @@ void SpecViewer::updateSimulation() {
     batteryTempLabel->setText(QString("Battery:     %1°C").arg(sim.getBatteryTemp(), 5, 'f', 1));
     batteryTempLabel->setStyleSheet(baseStyle + getTempColor(sim.getBatteryTemp(), 45.0, 50.0));
 
-    // Update Cooling Status Labels using a lambda for string conversion
+    // Update Cooling Status Labels using a lambda for string conversion from CoolingAction enum
     auto actionToString = [](CoolingAction action) -> QString { // Renamed NONE to TURNED_OFF, removed PASSIVE
         switch (action) {
             case CoolingAction::LIQUID_WARM: return "LIQUID WARM";
