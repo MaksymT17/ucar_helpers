@@ -40,6 +40,7 @@ class SpecViewer : public QMainWindow {
     Q_OBJECT
 public:
     SpecViewer(QWidget *parent = nullptr);
+    ~SpecViewer();
 private slots:
     void onThrottleChanged(int value);
     void onBrakeChanged(int value);

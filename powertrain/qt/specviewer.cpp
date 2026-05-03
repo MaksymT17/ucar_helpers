@@ -259,6 +259,18 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     simTimer->start(50);
 }
 
+SpecViewer::~SpecViewer() {
+    double dist = sim.getDistanceKm();
+    double time = sim.getTripTime();
+    double energyConsumed = 75.0 - sim.getBatteryKwh(); // 75.0 is initial capacity
+
+    spdlog::info("--- Trip Summary Report ---");
+    spdlog::info("Total Distance:  {:.3f} km", dist);
+    spdlog::info("Trip Duration:   {:.0f} seconds", time);
+    spdlog::info("Energy Consumed: {:.2f} kWh", energyConsumed);
+    spdlog::info("Dashboard closed.");
+}
+
 QVBoxLayout* SpecViewer::setupSpecBox() {
     QVBoxLayout *container = new QVBoxLayout();
     QGroupBox *specBox = new QGroupBox("Unit Specifications");
