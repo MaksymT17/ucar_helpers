@@ -1,6 +1,8 @@
 #include <QApplication>
 #include <QPalette>
 #include <QStyleFactory>
+#include <QStandardPaths>
+#include <QDir>
 #include <QPainter>
 #include <QPainterPath>
 #include <QIcon>
@@ -19,8 +21,13 @@ int main(int argc, char *argv[]) {
     QApplication a(argc, argv);
 
     // --- Initialize spdlog ---
+    // On macOS, logs should go to ~/Library/Application Support/<App>
+    QString logDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir().mkpath(logDir); 
+    std::string logPath = (logDir + "/powertrain.log").toStdString();
+
     auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>(); // Console output
-    auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("powertrain.log", false); // Log to file, append if exists
+    auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logPath, false); // Log to file, append if exists
     auto logger = std::make_shared<spdlog::logger>("ev_logger", spdlog::sinks_init_list{console_sink, file_sink});
     
     spdlog::set_default_logger(logger);

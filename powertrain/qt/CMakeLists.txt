@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Svg)
 find_package(spdlog REQUIRED)
 
 add_executable(EVSimulationQt
@@ -22,7 +22,8 @@ add_executable(EVSimulationQt
 )
 
 target_link_libraries(EVSimulationQt PRIVATE 
-    Qt6::Widgets 
+    Qt6::Widgets
+    Qt6::Svg
     spdlog::spdlog
 )
 
