@@ -79,9 +79,11 @@ A three-mass thermal system with two independent cooling loops.
 ## 6. Directory Structure
 ```text
 /powertrain
-├── implementation_details.md   <-- You are here
+├── implementation_details.md
 ├── thermal_system_design_notes.md
 ├── powertrain_scheme2.png
+├── app_icon.jpg
+├── top_view.png
 ├── python/
 │   └── ev_simulation.py
 └── qt/

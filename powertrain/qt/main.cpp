@@ -24,7 +24,7 @@ int main(int argc, char *argv[]) {
     spdlog::info("EVPowertrain Simulation Engine Starting...");
 
     // Create a rounded macOS-style icon
-    QPixmap basePix("/Users/mba23/projects/ucar_helpers/powertrain/app_icon.jpg");
+    QPixmap basePix(":/assets/app_icon.jpg");
     QIcon appIcon;
     if (!basePix.isNull()) {
         int side = std::min(basePix.width(), basePix.height());

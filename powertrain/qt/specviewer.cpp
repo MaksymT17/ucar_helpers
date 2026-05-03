@@ -1,5 +1,4 @@
 #include <QApplication>
-#include <QApplication>
 #include <QIcon>
 #include <QPainter>
 #include <QPainterPath>
@@ -95,7 +94,7 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     mainLayout->setSpacing(25); // Increased base spacing between major columns
 
     // Load the car image for the gradient display
-    QString imgPath = "/Users/mba23/projects/ucar_helpers/powertrain/powertrain_scheme2.png";
+    QString imgPath = ":/assets/powertrain_scheme2.png";
     baseCarPixmap = QPixmap(imgPath).scaled(300, 120, Qt::KeepAspectRatio, Qt::SmoothTransformation); // Scaled for the WindFlowWidget
 
     // --- LEFT COLUMN: Controls & Motion ---
@@ -124,7 +123,7 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     connect(brakeSlider, &QSlider::valueChanged, this, &SpecViewer::onBrakeChanged);
     // Speed Label
     speedLabel = new QLabel("0.0 km/h");
-    speedLabel->setStyleSheet("font-family: 'Courier'; font-size: 42px; font-weight: bold; color: #00ff99; text-shadow: 0 0 10px #00ff99;");
+    speedLabel->setStyleSheet("font-family: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace; font-size: 42px; font-weight: bold; color: #00ff99;");
     speedLabel->setAlignment(Qt::AlignCenter);
 
     batteryLabel = new QLabel("Battery: 75.00 kWh");
@@ -144,7 +143,7 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     coolingBatteryLabel->setStyleSheet(statStyle);
     // Power Label
     powerLabel = new QLabel("--- kWh/100km");
-    powerLabel->setStyleSheet("font-family: 'Courier'; font-weight: bold; color: #00ff99;");
+    powerLabel->setStyleSheet("font-family: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace; font-weight: bold; color: #00ff99;");
     // Status Label
     statusLabel = new QLabel("✓ System Normal");
     statusLabel->setStyleSheet("font-family: 'Helvetica'; font-size: 15px; font-weight: bold; color: #00ff44;");
@@ -368,10 +367,10 @@ QVBoxLayout* SpecViewer::setupGradientBox() {
     gradientDisplay->setBasePixmap(baseCarPixmap);
 
     gradientDescLabel = new QLabel("FLAT");
-    gradientDescLabel->setStyleSheet("font-family: 'Courier'; font-size: 13px; font-weight: bold; color: #00d1ff;");
+    gradientDescLabel->setStyleSheet("font-family: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace; font-size: 13px; font-weight: bold; color: #00d1ff;");
 
     gradientValueLabel = new QLabel("+0.0%");
-    gradientValueLabel->setStyleSheet("font-family: 'Courier'; font-size: 14px; font-weight: bold;");
+    gradientValueLabel->setStyleSheet("font-family: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace; font-size: 14px; font-weight: bold;");
     gradientValueLabel->setFixedWidth(70);
     gradientValueLabel->setAlignment(Qt::AlignCenter);
 
@@ -393,7 +392,7 @@ QVBoxLayout* SpecViewer::setupGradientBox() {
 
 QWidget* SpecViewer::setupVisualThermalDisplay() {
     QLabel *imgLabel = new QLabel();
-    QPixmap topView("/Users/mba23/projects/ucar_helpers/powertrain/top_view.png");
+    QPixmap topView(":/assets/top_view.png");
     // Load and scale the top-view car image
     if (!topView.isNull()) {
         // Scale to height 702 (base 585 + 20%) for better visibility
@@ -407,7 +406,7 @@ QWidget* SpecViewer::setupVisualThermalDisplay() {
     }
     imgLabel->setAlignment(Qt::AlignCenter);
     // Base style for visual temperature labels
-    QString style = "font-weight: bold; font-family: 'Courier'; font-size: 12px; background-color: rgba(10,10,10,220); border: 1px solid #444; border-radius: 2px; padding: 2px;";
+    QString style = "font-weight: bold; font-family: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace; font-size: 12px; background-color: rgba(10,10,10,220); border: 1px solid #444; border-radius: 2px; padding: 2px;";
     // Motor temperature overlay
     visualMotorTemp = new QLabel("M: 25.0°C", imgLabel);
     visualMotorTemp->setStyleSheet(style + "color: #00ff99;");
@@ -519,7 +518,7 @@ QGridLayout* SpecViewer::setupTemperatureBox() {
     grid->setHorizontalSpacing(15);
     grid->setColumnMinimumWidth(0, 135); // Fit "Coolant M/I: 00.0°C"
     grid->setColumnMinimumWidth(1, 125); // Fit "Inverter: 00.0°C"
-    QString style = "font-family: 'Courier'; font-size: 14px; font-weight: bold; background-color: black;"; // Styling for temperature labels
+    QString style = "font-family: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace; font-size: 14px; font-weight: bold; background-color: black;"; // Styling for temperature labels
 
     coolantMILabel = new QLabel("Coolant M/I: 25.0°C");
     motorTempLabel = new QLabel("Motor:       25.0°C");
@@ -700,7 +699,7 @@ void SpecViewer::updateSimulation() {
     }
 
     // Update Thermal Labels with color coding
-    QString baseStyle = "font-family: 'Courier'; font-size: 14px; font-weight: bold; background-color: black;";
+    QString baseStyle = "font-family: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace; font-size: 14px; font-weight: bold; background-color: black;";
     
     coolantMILabel->setText(QString("Coolant M/I: %1°C").arg(sim.getCoolantPTTemp(), 5, 'f', 1));
     
@@ -713,7 +712,7 @@ void SpecViewer::updateSimulation() {
     coolantBatLabel->setText(QString("Coolant Bat: %1°C").arg(sim.getCoolantBatTemp(), 5, 'f', 1));
     
     // Update Visual Overlays with color-coded temperatures
-    QString vStyle = "font-weight: bold; font-family: 'Courier'; font-size: 12px; background-color: rgba(10,10,10,220); border: 1px solid #444; border-radius: 2px; padding: 2px;";
+    QString vStyle = "font-weight: bold; font-family: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace; font-size: 12px; background-color: rgba(10,10,10,220); border: 1px solid #444; border-radius: 2px; padding: 2px;";
     
     visualMotorTemp->setText(QString("M: %1°C").arg(sim.getMotorTemp(), 4, 'f', 1));
     visualMotorTemp->setStyleSheet(vStyle + getTempColor(sim.getMotorTemp(), 90.0, 140.0));
