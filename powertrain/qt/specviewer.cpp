@@ -207,6 +207,14 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     leftCol->addLayout(setupCabinSystemsBox());
     leftCol->addStretch();
 
+    // Ignition Button and Pre-check Status
+    ignitionButton = new QPushButton("START EV");
+    ignitionButton->setStyleSheet("QPushButton { background-color: #00ff44; color: black; font-weight: bold; font-size: 18px; padding: 10px; border-radius: 5px; }"
+                                  "QPushButton:hover { background-color: #00cc33; }"
+                                  "QPushButton:pressed { background-color: #009922; }");
+    connect(ignitionButton, &QPushButton::clicked, this, &SpecViewer::onIgnitionToggled);
+    leftCol->addWidget(ignitionButton);
+
     mainLayout->addLayout(leftCol, 8); 
 
     // --- MIDDLE COLUMN: Thermal & Environment ---
@@ -653,6 +661,17 @@ void SpecViewer::onDriveModeChanged(int index) {
     sim.setDriveMode(index);
 }
 // Helper function to get color based on temperature thresholds
+QString SpecViewer::getPrecheckStatusString(PrecheckStatus status) {
+    switch (status) {
+        case PrecheckStatus::Initializing: return "Initializing...";
+        case PrecheckStatus::HeatingBattery: return "Heating Battery...";
+        case PrecheckStatus::CoolingBattery: return "Cooling Battery...";
+        case PrecheckStatus::HeatingPT: return "Heating Powertrain...";
+        case PrecheckStatus::CoolingPT: return "Cooling Powertrain...";
+        case PrecheckStatus::Ready: return "Ready to Drive";
+        default: return "Unknown Status";
+    }
+}
 QString SpecViewer::getTempColor(double t, double normalMax, double emergencyMax) {
     if (t > emergencyMax) return "color: red;";
     if (t > normalMax)    return "color: orange;";
@@ -661,6 +680,16 @@ QString SpecViewer::getTempColor(double t, double normalMax, double emergencyMax
 
 void SpecViewer::updateSimulation() {
     sim.update(0.05); // Fixed DT 50ms
+
+    // Disable throttle/brake if ignition is off or pre-checks not ready
+    throttleSlider->setEnabled(sim.isIgnitionOn() && sim.getPrecheckStatus() == PrecheckStatus::Ready);
+    brakeSlider->setEnabled(sim.isIgnitionOn() && sim.getPrecheckStatus() == PrecheckStatus::Ready);
+
+    // Sync UI sliders with simulator state (handles auto-reset at stop)
+    int currentSimThrottle = static_cast<int>(sim.getThrottle() * 100.0);
+    int currentSimBrake = static_cast<int>(sim.getBrake() * 100.0);
+    if (throttleSlider->value() != currentSimThrottle) throttleSlider->setValue(currentSimThrottle);
+    if (brakeSlider->value() != currentSimBrake)       brakeSlider->setValue(currentSimBrake);
     
     speedLabel->setText(QString("%1 km/h").arg(sim.getSpeedKmh(), 0, 'f', 1));
     batteryLabel->setText(QString("Battery: %1 kWh (%2%)").arg(sim.getBatteryKwh(), 0, 'f', 2).arg(sim.getSOC(), 0, 'f', 1)); // Update battery status
@@ -694,21 +723,43 @@ void SpecViewer::updateSimulation() {
         case DriveMode::SPORT:    modeName = "SPORT"; break;
     }
 
-    if (sim.isEmergency()) {
-        // Check if we are restricted due to environment before starting
-        if (sim.getSpeedKmh() < 0.1) {
-            statusLabel->setText("⚠ TEMP RESTRICTION - OUTSIDE LIMITS");
-        } else {
-            statusLabel->setText("⚠ EMERGENCY - LIMP MODE 20%");
-        }
-        statusLabel->setStyleSheet("font-family: 'Helvetica'; font-size: 15px; font-weight: bold; color: red;");
-    } else if (sim.isDerated()) {
-        statusLabel->setText(QString("⚡ %1 - THERMAL DERATE 70%").arg(modeName));
-        statusLabel->setStyleSheet("font-family: 'Helvetica'; font-size: 15px; font-weight: bold; color: orange;");
+    // Update Ignition Button and Pre-check Status
+    if (sim.isIgnitionOn()) {
+        ignitionButton->setText("STOP EV");
+        ignitionButton->setStyleSheet("QPushButton { background-color: #ff4400; color: black; font-weight: bold; font-size: 18px; padding: 10px; border-radius: 5px; }"
+                                      "QPushButton:hover { background-color: #cc3300; }"
+                                      "QPushButton:pressed { background-color: #992200; }");
     } else {
-        statusLabel->setText(QString("✓ %1 - System Normal").arg(modeName));
-        statusLabel->setStyleSheet("font-family: 'Helvetica'; font-size: 15px; font-weight: bold; color: #00ff44;");
+        ignitionButton->setText("START EV");
+        ignitionButton->setStyleSheet("QPushButton { background-color: #00ff44; color: black; font-weight: bold; font-size: 18px; padding: 10px; border-radius: 5px; }"
+                                      "QPushButton:hover { background-color: #00cc33; }"
+                                      "QPushButton:pressed { background-color: #009922; }");
     }
+
+    // --- Unified System Status (Lexus/Mercedes Perception) ---
+    QString fullStatus;
+    QString statusColor = "#00ff44"; // Default Green
+
+    if (!sim.isIgnitionOn()) {
+        fullStatus = "SYSTEM STANDBY • PRESS START";
+        statusColor = "#666666"; // Dim grey for standby
+    } else if (sim.getPrecheckStatus() != PrecheckStatus::Ready) {
+        fullStatus = "CONDITIONING • " + getPrecheckStatusString(sim.getPrecheckStatus()).toUpper();
+        statusColor = "orange";
+    } else if (sim.isEmergency()) {
+        if (sim.getSpeedKmh() < 0.1) fullStatus = "⚠ TEMP RESTRICTION • OUTSIDE LIMITS";
+        else                    fullStatus = "⚠ EMERGENCY • LIMP MODE 20%";
+        statusColor = "red";
+    } else if (sim.isDerated()) {
+        fullStatus = "⚡ " + modeName + " • THERMAL DERATE 70%";
+        statusColor = "orange";
+    } else {
+        fullStatus = "✓ " + modeName + " • SYSTEM NORMAL";
+        statusColor = "#00ff44";
+    }
+
+    statusLabel->setText(fullStatus);
+    statusLabel->setStyleSheet(QString("font-family: 'Helvetica'; font-size: 15px; font-weight: bold; color: %1;").arg(statusColor));
 
     // Update Thermal Labels with color coding
     QString baseStyle = "font-family: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace; font-size: 14px; font-weight: bold; background-color: black;";
@@ -742,11 +793,12 @@ void SpecViewer::updateSimulation() {
     batteryTempLabel->setStyleSheet(baseStyle + getTempColor(sim.getBatteryTemp(), 45.0, 50.0));
 
     // Update Cooling Status Labels using a lambda for string conversion from CoolingAction enum
-    auto actionToString = [](CoolingAction action) -> QString { // Renamed NONE to TURNED_OFF, removed PASSIVE
+    auto actionToString = [](CoolingAction action) -> QString {
         switch (action) {
             case CoolingAction::LIQUID_WARM: return "LIQUID WARM";
-            case CoolingAction::ACTIVE_FAN:  return "ACTIVE FAN";
-            case CoolingAction::LIQUID_COLD: return "LIQUID COLD";
+            case CoolingAction::LIQUID_LOW:  return "LIQUID LOW";
+            case CoolingAction::LIQUID_MED:  return "LIQUID MED";
+            case CoolingAction::LIQUID_HIGH: return "LIQUID HIGH";
             case CoolingAction::TURNED_OFF:  return "TURNED OFF";
             default:                         return "UNKNOWN"; // Fallback for safety
         }
@@ -755,4 +807,8 @@ void SpecViewer::updateSimulation() {
     coolingMotorLabel->setText(QString("Motor:    %1").arg(actionToString(sim.getMotorAction())));
     coolingInverterLabel->setText(QString("Inverter: %1").arg(actionToString(sim.getInverterAction())));
     coolingBatteryLabel->setText(QString("Battery:  %1").arg(actionToString(sim.getBatteryAction())));
+}
+
+void SpecViewer::onIgnitionToggled() {
+    sim.setIgnition(!sim.isIgnitionOn());
 }

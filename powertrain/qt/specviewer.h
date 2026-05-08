@@ -13,6 +13,7 @@
 #include <QCheckBox>
 #include <QPainter>
 #include <QTimer>
+#include <QPushButton>
 
 class WindFlowWidget : public QWidget {
     Q_OBJECT
@@ -55,6 +56,7 @@ private slots:
     void onInfotainmentChanged(int value);
     void onDriveModeChanged(int index);
     void updateSimulation();
+    void onIgnitionToggled();
 private:
     QVBoxLayout* setupSpecBox(); // Declaration for the helper method
     QVBoxLayout* setupGradientBox();
@@ -81,6 +83,7 @@ private:
     QLabel *statusLabel;
     QSlider *throttleSlider;
     QSlider *brakeSlider;
+    QPushButton *ignitionButton;
     
     QCheckBox *lowBeamCheck;
     QCheckBox *highBeamCheck;
@@ -116,6 +119,7 @@ private:
     QLabel *visualCoolantMILabel;
     QLabel *visualCoolantBatLabel;
 
+    QString getPrecheckStatusString(PrecheckStatus status);
     void addSpecRow(QVBoxLayout *layout, QString name, QString value);
     QString getTempColor(double t, double normalMax, double emergencyMax);
 };

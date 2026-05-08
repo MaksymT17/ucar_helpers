@@ -76,10 +76,10 @@ REGEN_EFFICIENCY   = 0.85    # round-trip: kinetic -> electrical -> battery
 MECH_BRAKE_DECEL   = 8.0     # m/s² max mechanical brake deceleration (full pedal past 0.5)
 # Losses = P_elec * (1 - η_motor)  [W as heat]
 MOTOR_ETA_BASE = 0.97       # Tesla M3 PMSM peak efficiency ~97% at optimal point
-MOTOR_K_COPPER = 0.06       # copper loss coefficient (scales with I² ∝ throttle²)
+MOTOR_K_COPPER = 0.06       # copper loss coefficient (scales with I^2 proportional to throttle^2)
 MOTOR_K_IRON   = 0.03       # iron/eddy loss (scales with RPM)
 # floor set to 0.85 — real PMSM worst case, not 0.70 (that would be ICE territory)
-
+# Inverter: IGBT switching losses scale with current (proportional to throttle) + fixed conduction loss
 # Inverter: IGBT switching losses scale with current (∝ throttle) + fixed conduction loss
 INVERTER_ETA_BASE = 0.98
 INVERTER_K_SWITCH = 0.03    # switching loss coefficient
@@ -140,7 +140,7 @@ class ThermalDevice:
             self.cooling_action = max(CoolingAction.NONE, self.cooling_action - 1)
         elif T <= self.temp_normal_max:
             # Above optimal but within normal — passive only
-            # At speed, ram air through the radiator/fins does the job
+            # At speed, ram air through the radiator/fins does the job, otherwise natural convection
             self.cooling_action = CoolingAction.PASSIVE
         else:
             # Above normal max — escalate one step per tick
@@ -154,7 +154,7 @@ class CoolantLoop:
         self.thermal_mass = thermal_mass
         self.radiator_h = radiator_h
 
-    def update(self, heat_absorbed, ambient_temp, speed_ms, dt):
+    def update(self, heat_absorbed, ambient_temp, speed_ms, dt): # Updates coolant temperature
         # Ram air boosts radiator dissipation proportional to dynamic pressure (v²)
         h_eff = self.radiator_h + RAM_AIR_K * speed_ms**2
         q_rad = h_eff * (self.temperature - ambient_temp)
@@ -177,7 +177,7 @@ class EVSimulation:
         self.coolant_pt  = CoolantLoop(AMBIENT_TEMP, COOLANT_PT_THERMAL_MASS,  COOLANT_PT_RADIATOR_H)
         self.coolant_bat = CoolantLoop(AMBIENT_TEMP, COOLANT_BAT_THERMAL_MASS, COOLANT_BAT_RADIATOR_H)
         self.ambient_temp = AMBIENT_TEMP
-        self.emergency_shutdown = False
+        self.emergency_shutdown = False # Flag for critical system failure
         self.thermal_derate = False  # True when any device above normal_max
         self.smooth_limit = 1.0      # Slew-rate limited multiplier (0.0 to 1.0)
         self._cooling_poll_ticks = 0
@@ -218,7 +218,7 @@ class EVSimulation:
         ]
 
     def update(self):
-        # Calculate the Target Power Limit (Binary/Instant)
+        # Calculate the Target Power Limit (Binary/Instant) based on safety flags
         """Main simulation tick."""
         target_limit = self._determine_power_limit()
         self._apply_slew_rate_limiter(target_limit)
@@ -246,7 +246,7 @@ class EVSimulation:
                 self.emergency_shutdown)
 
     def _determine_power_limit(self) -> float:
-        if self.emergency_shutdown:
+        if self.emergency_shutdown: # If emergency, power is cut
             return 0.0
         if self.thermal_derate:
             return THERMAL_DERATE_FACTOR
@@ -254,7 +254,7 @@ class EVSimulation:
 
     def _apply_slew_rate_limiter(self, target_limit: float):
         ramp_step = 0.4 * DT
-        if self.smooth_limit < target_limit:
+        if self.smooth_limit < target_limit: # Smoothly increase power limit
             self.smooth_limit = min(target_limit, self.smooth_limit + ramp_step)
         elif self.smooth_limit > target_limit:
             self.smooth_limit = max(target_limit, self.smooth_limit - ramp_step)
@@ -266,7 +266,7 @@ class EVSimulation:
 
         if motor_rpm < 5000:
             max_avail_torque = MAX_WHEEL_TORQUE
-        else:
+        else: # Constant power region
             max_avail_torque = min(MAX_WHEEL_TORQUE, MAX_POWER / max(0.01, v / WHEEL_RADIUS))
 
         applied_torque = throttle_used * max_avail_torque
@@ -280,7 +280,7 @@ class EVSimulation:
         rolling_force = ROLLING_RESIST_COEFF * MASS * GRAVITY
         engine_force  = applied_torque / WHEEL_RADIUS
         gradient_force = MASS * GRAVITY * math.sin(math.radians(self.gradient))
-
+        # Braking forces
         brake_used = self.brake if not self.emergency_shutdown else 0.0
         regen_fraction = min(brake_used, 0.5) / 0.5
         mech_fraction = max(0.0, brake_used - 0.5) / 0.5
@@ -291,7 +291,7 @@ class EVSimulation:
     def _process_energy_and_thermals(self, v: float, applied_torque: float):
         speed_kmh = v * 3.6
         dyn_eff = 0.94 if speed_kmh < 100 else max(0.80, 0.94 - (speed_kmh - 100) / 1000)
-        mech_power = applied_torque * (v / WHEEL_RADIUS)
+        mech_power = applied_torque * (v / WHEEL_RADIUS) # Mechanical power at the wheels
         electrical_draw = (mech_power / dyn_eff) + 500
 
         brake_used = self.brake if not self.emergency_shutdown else 0.0
@@ -300,7 +300,7 @@ class EVSimulation:
         regen_power = regen_force * v
         regen_returned = regen_power * REGEN_EFFICIENCY
 
-        motor_rpm = ((v / WHEEL_RADIUS) * 60 / (2 * math.pi)) * 9.04
+        motor_rpm = ((v / WHEEL_RADIUS) * 60 / (2 * math.pi)) * 9.04 # Motor RPM
         rpm_norm  = min(motor_rpm / 18000, 1.0)
         throttle_used = self.throttle * self.smooth_limit
         eta_inv   = max(0.88, INVERTER_ETA_BASE - INVERTER_K_SWITCH * throttle_used)
@@ -309,7 +309,7 @@ class EVSimulation:
         motor_heat = (mech_power + regen_power) * (1.0 - eta_motor)
         inverter_heat = (mech_power + regen_power) * (1.0 - eta_inv)
         battery_current = electrical_draw / BATTERY_V_NOMINAL
-        battery_heat    = battery_current**2 * BATTERY_R_INTERNAL
+        battery_heat    = battery_current**2 * BATTERY_R_INTERNAL # Joule heating
 
         self.motor_thermal.update_temperature(motor_heat, self.ambient_temp, self.coolant_pt.temperature, DT)
         self.inverter_thermal.update_temperature(inverter_heat, self.ambient_temp, self.coolant_pt.temperature, DT)
@@ -323,7 +323,7 @@ class EVSimulation:
         self._cooling_poll_ticks += 1
         if self._cooling_poll_ticks >= self._cooling_poll_every:
             self._cooling_poll_ticks = 0
-            self.motor_thermal.choose_cooling_action(speed_kmh)
+            self.motor_thermal.choose_cooling_action(speed_kmh) # Update cooling actions for each device
             self.inverter_thermal.choose_cooling_action(speed_kmh)
             self.battery_thermal.choose_cooling_action(speed_kmh)
 
@@ -331,7 +331,7 @@ class EVSimulation:
                 self.motor_thermal.is_in_emergency(self.motor_thermal.temperature),
                 self.inverter_thermal.is_in_emergency(self.inverter_thermal.temperature),
                 self.battery_thermal.is_in_emergency(self.battery_thermal.temperature)])
-            
+            # Determine if thermal derate is needed
             if self.emergency_shutdown:
                 self.thermal_derate = False
             else:
@@ -344,7 +344,7 @@ class EVSimulation:
         self.battery_energy -= electrical_draw * DT
         self.battery_energy += regen_returned * DT
         self.battery_energy = min(self.battery_energy, BATTERY_CAPACITY)
-        self.last_power_kw = (electrical_draw - regen_returned) / 1000.0
+        self.last_power_kw = (electrical_draw - regen_returned) / 1000.0 # Convert to kW
 
         self._eff_power_sum  = getattr(self, '_eff_power_sum',  0.0) + max(0.0, self.last_power_kw)
         self._eff_speed_sum  = getattr(self, '_eff_speed_sum',  0.0) + (v * 3.6)
@@ -357,7 +357,7 @@ class EVSimulation:
         
         avg_speed = self._eff_speed_sum / max(1, self._eff_ticks)
         avg_power = self._eff_power_sum / max(1, self._eff_ticks)
-        self.last_efficiency_kwh100 = (avg_power / avg_speed * 100) if avg_speed > 2.0 else None
+        self.last_efficiency_kwh100 = (avg_power / avg_speed * 100) if avg_speed > 2.0 else None # kWh/100km
         self.distance += self.speed * DT
 
         return (self.speed * 3.6, self.battery_energy / 3600000, self.distance / 1000,
@@ -367,7 +367,7 @@ class EVSimulation:
                 self.trip_time,
                 self.emergency_shutdown)
 
-    def run_physics(self, state, lock):
+    def run_physics(self, state, lock): # Physics simulation loop
         """Physics loop — runs in its own thread, writes to shared SimState."""
         while True:
             t0 = time.perf_counter()
@@ -429,7 +429,7 @@ class EVGUI:
         self.root.configure(padx=20, pady=20, bg="#000000")
 
         style = ttk.Style()
-        style.theme_use('clam') # Base font size 11 -> 13
+        style.theme_use('clam') # Base font size 11 -> 13 for better readability
         style.configure("TLabel", font=("Helvetica", 13), background="#000000", foreground="#e0e0e0")
         style.configure("TFrame", background="#000000")
         style.configure("TLabelframe", background="#000000", foreground="#00d1ff", borderwidth=1)
@@ -440,7 +440,7 @@ class EVGUI:
 
         header_frame = ttk.Frame(root)
         header_frame.pack(fill="x", pady=(0, 15))
-        ttk.Label(header_frame, text="EV POWERTRAIN", style="Header.TLabel").pack(side="left")
+        ttk.Label(header_frame, text="EV POWERTRAIN", style="Header.TLabel").pack(side="left") # Main header
         ttk.Label(header_frame, text=" v1.02 ALPHA", font=("Helvetica", 12), foreground="#666666").pack(side="left", padx=5, pady=(8, 0))
 
         # ── Two-column container ──────────────────────────────────────────────
@@ -448,7 +448,7 @@ class EVGUI:
         columns.pack(fill="both", expand=True)
 
         # Configure grid for columns frame to achieve proportional sizing
-        columns.grid_columnconfigure(0, weight=8) # Left column (20% reduction from equal share)
+        columns.grid_columnconfigure(0, weight=8) # Left column (controls & motion)
         columns.grid_columnconfigure(1, weight=9) # Mid column (10% reduction from equal share)
         columns.grid_columnconfigure(2, weight=10) # Right column (baseline)
         columns.grid_rowconfigure(0, weight=1) # Only one row
@@ -457,20 +457,20 @@ class EVGUI:
         left = ttk.Frame(columns)
         left.grid(row=0, column=0, sticky="nsew", padx=(10, 10))
 
-        self.throttle_var = tk.DoubleVar(value=0.0)
+        self.throttle_var = tk.DoubleVar(value=0.0) # Throttle control
         self.throttle_label = ttk.Label(left, text="Throttle: 0%")
         self.throttle_label.pack(anchor="w")
         throttle_slider = ttk.Scale(left, from_=0.0, to=1.0, orient="horizontal",
                   variable=self.throttle_var, command=self.on_throttle_change)
         throttle_slider.pack(fill="x")
 
-        self.brake_var = tk.DoubleVar(value=0.0)
+        self.brake_var = tk.DoubleVar(value=0.0) # Brake control
         self.brake_label = ttk.Label(left, text="Brake: 0%  [regen off]")
         self.brake_label.pack(anchor="w", pady=(6, 0))
         brake_slider = ttk.Scale(left, from_=0.0, to=1.0, orient="horizontal",
                   variable=self.brake_var, command=self.on_brake_change)
         brake_slider.pack(fill="x")
-        dash_frame = ttk.Frame(left)
+        dash_frame = ttk.Frame(left) # Dashboard display frame
         dash_frame.pack(fill="x", pady=(10, 4))
         self.speed_ui = ttk.Label(dash_frame, text="0.0 km/h", style="Dashboard.TLabel")
         self.speed_ui.pack(pady=(10, 4))
@@ -481,7 +481,7 @@ class EVGUI:
         self.trip_time_ui = ttk.Label(left, text="Trip Time: 00:00:00", font=("Courier", 14), foreground="#aaaaaa")
         self.trip_time_ui.pack(anchor="w", pady=(0,2))
         
-        # Power diagram
+        # Power diagram (graph)
         CHART_W, CHART_H = 300, 80
         self._chart_w = CHART_W
         self._chart_h = CHART_H
@@ -498,7 +498,7 @@ class EVGUI:
                                       bg="#000000", highlightthickness=0)
         self.power_canvas.pack(padx=6, pady=(0, 6))
         self._zero_y = CHART_H // 2
-        # Pre-create one line per pixel column — update coords each frame, no delete/redraw
+        # Pre-create one line per pixel column — update coordinates each frame, no delete/redraw
         self._bars = [
             self.power_canvas.create_line(px, self._zero_y, px, self._zero_y,
                                           fill="#ff6600", width=1)
@@ -515,7 +515,7 @@ class EVGUI:
         mid = ttk.Frame(columns)
         mid.grid(row=0, column=1, sticky="nsew", padx=10)
 
-        ttk.Label(mid, text="THERMAL MONITOR", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(mid, text="THERMAL MONITOR", style="Header.TLabel").pack(anchor="w") # Thermal monitor header
 
         self.ambient_label = ttk.Label(mid, text=f"Ambient: {AMBIENT_TEMP:.1f}°C")
         self.ambient_label.pack(anchor="w", pady=(6, 0))
@@ -525,7 +525,7 @@ class EVGUI:
 
         # ── Gradient selector: vertical swiper + PIL-rotated car image ───────────
         grad_frame = ttk.LabelFrame(mid, text="Road Gradient", style="Param.TLabelframe")
-        grad_frame.pack(fill="x", pady=(8, 0))
+        grad_frame.pack(fill="x", pady=(8, 0)) # Road gradient control
 
         GCANV_W, GCANV_H = 310, 130
         self._grad_cx, self._grad_cy = GCANV_W // 2, GCANV_H // 2
@@ -534,7 +534,7 @@ class EVGUI:
         SWIPE_W = 22
         self._swipe_canvas = tk.Canvas(grad_frame, width=SWIPE_W, height=GCANV_H,
                                        bg="#111", highlightthickness=1,
-                                       highlightbackground="#444")
+                                       highlightbackground="#444") # Vertical swiper for gradient
         self._swipe_canvas.pack(side="left", padx=(6, 4), pady=6)
         # Track line
         self._swipe_canvas.create_line(SWIPE_W//2, 8, SWIPE_W//2, GCANV_H-8,
@@ -555,7 +555,7 @@ class EVGUI:
         self._swipe_h = GCANV_H
         self._swipe_w = SWIPE_W
 
-        # Car image canvas (now with black background)
+        # Car image canvas (now with black background for better contrast)
         self._grad_canvas = tk.Canvas(grad_frame, width=GCANV_W, height=GCANV_H, bg="black",
                                       highlightthickness=1, highlightbackground="#333333")
         self._grad_canvas.pack(side="left", pady=6)
@@ -570,7 +570,7 @@ class EVGUI:
         self._grad_last_pct = 0.0
         self._update_grad_image(0.0)
 
-        # Label
+        # Label for gradient percentage and description
         self.gradient_label = ttk.Label(grad_frame, text=" +0.0%\n  flat", # Font size 11 -> 13
                                         font=("Courier", 13, "bold"), width=10)
         self.gradient_label.pack(side="left", padx=8)
@@ -578,7 +578,7 @@ class EVGUI:
         # Component temps
         temps_frame = ttk.LabelFrame(mid, text="Temperatures", style="Param.TLabelframe")
         temps_frame.pack(fill="x", pady=8)
-        row_bg = "#000000"
+        row_bg = "#000000" # Background for temperature labels
         self.coolant_pt_ui    = ttk.Label(temps_frame, text="Coolant M/I: 25.0°C", font=("Courier", 16, "bold"), background=row_bg)
         self.motor_temp_ui    = ttk.Label(temps_frame, text="Motor:       25.0°C", font=("Courier", 16, "bold"), background=row_bg)
         self.inverter_temp_ui = ttk.Label(temps_frame, text="Inverter:    25.0°C", font=("Courier", 16, "bold"), background=row_bg)
@@ -596,10 +596,10 @@ class EVGUI:
         right = ttk.Frame(columns)
         right.grid(row=0, column=2, sticky="nsew", padx=(10, 0))
 
-        ttk.Label(right, text="SYSTEM INFO", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(right, text="SYSTEM INFO", style="Header.TLabel").pack(anchor="w") # System info header
 
         # Moved for better horizontal layout / height reduction
-        params_frame = ttk.LabelFrame(right, text="Unit Specifications", style="Param.TLabelframe")
+        params_frame = ttk.LabelFrame(right, text="Unit Specifications", style="Param.TLabelframe") # Unit specifications display
         params_frame.pack(fill="x", pady=8, ipady=4)
         for name, value in self.sim.get_parameters(): # Font size 9 -> 11
             ttk.Label(params_frame, text=f"{name}: {value}", font=("Helvetica", 11), foreground="#888888").pack(anchor="w", padx=8, pady=1)
@@ -621,7 +621,7 @@ class EVGUI:
     def on_throttle_change(self, _):
         val = self.throttle_var.get()
         self.sim.throttle = val
-        self.throttle_label.config(text=f"Throttle: {val*100:.0f}%")
+        self.throttle_label.config(text=f"Throttle: {val*100:.0f}%") # Update throttle label
         if val > 0.0:
             self.brake_var.set(0.0)
             self.sim.brake = 0.0
@@ -633,7 +633,7 @@ class EVGUI:
         if val > 0.0:
             self.throttle_var.set(0.0)
             self.sim.throttle = 0.0
-            self.throttle_label.config(text="Throttle: 0%")
+            self.throttle_label.config(text="Throttle: 0%") # If brake is applied, release throttle
         if val <= 0.0:
             mode = "regen off"
         elif val <= 0.5:
@@ -643,7 +643,7 @@ class EVGUI:
             regen_pct = 100
             mech_pct  = (val - 0.5) / 0.5 * 100
             mode = f"regen 100% + disk {mech_pct:.0f}%"
-        self.brake_label.config(text=f"Brake: {val*100:.0f}%  [{mode}]")
+        self.brake_label.config(text=f"Brake: {val*100:.0f}%  [{mode}]") # Update brake label
 
     def _update_grad_image(self, pct):
         """Rotate PIL image by gradient angle on white background and update canvas."""
@@ -651,7 +651,7 @@ class EVGUI:
         # Paste car onto black background before rotating so corners are black
         bg = Image.new("RGB", self._grad_pil_base.size, (0, 0, 0))
         bg.paste(self._grad_pil_base, (0, 0))
-        rotated = bg.rotate(-angle_deg, resample=Image.BICUBIC, expand=False,
+        rotated = bg.rotate(-angle_deg, resample=Image.BICUBIC, expand=False, # Rotate image
                             fillcolor=(0, 0, 0))
         self._grad_tk_img = ImageTk.PhotoImage(rotated)
         self._grad_canvas.itemconfig(self._grad_img_item, image=self._grad_tk_img)
@@ -663,7 +663,7 @@ class EVGUI:
         pct = max(-20.0, min(20.0, pct))
         # Move thumb
         ty = max(10, min(self._swipe_h - 10, event.y))
-        self._swipe_canvas.coords(self._swipe_thumb, 3, ty-10, self._swipe_w-3, ty+10)
+        self._swipe_canvas.coords(self._swipe_thumb, 3, ty-10, self._swipe_w-3, ty+10) # Update thumb position
         self._apply_gradient(pct)
 
     def on_gradient_change(self, _):
@@ -677,7 +677,7 @@ class EVGUI:
         if pct > 0.1:    desc = "uphill"
         elif pct < -0.1: desc = "downhill"
         else:            desc = "flat"
-        self.gradient_label.config(text=f" {pct:+5.1f}%\n  {desc}")
+        self.gradient_label.config(text=f" {pct:+5.1f}%\n  {desc}") # Update gradient label
 
     def on_ambient_change(self, _):
         ambient = self.ambient_var.get()
@@ -710,7 +710,7 @@ class EVGUI:
         seconds = int(trip_time % 60)
 
         self.speed_ui.config(text=f"{speed_kmh:6.1f} km/h")
-        self.battery_ui.config(text=f"Battery: {kwh_left:6.2f} kWh")
+        self.battery_ui.config(text=f"Battery: {kwh_left:6.2f} kWh") # Update battery display
         self.dist_ui.config(text=f"Distance: {dist_km:8.3f} km")
 
         eff_str = f"{eff:5.1f} kWh/100km" if eff is not None else "  --- kWh/100km"
@@ -733,7 +733,7 @@ class EVGUI:
                 c.itemconfig(bar, fill="#cc3300")
             else:
                 c.itemconfig(bar, fill="#ff6600")
-        self.trip_time_ui.config(text=f"Trip Time: {hours:02d}:{minutes:02d}:{seconds:02d}")
+        self.trip_time_ui.config(text=f"Trip Time: {hours:02d}:{minutes:02d}:{seconds:02d}") # Update trip time display
 
         def temp_color(t, normal_max, emergency_max):
             if t > emergency_max:  return "red"
@@ -741,7 +741,7 @@ class EVGUI:
             return "#00ff99"
 
         self.coolant_pt_ui.config( text=f"Coolant M/I: {coolant_pt_temp:5.1f}°C")
-        self.motor_temp_ui.config(
+        self.motor_temp_ui.config( # Update motor temperature display
             text=f"Motor:    {motor_temp:5.1f}°C",
             foreground=temp_color(motor_temp, MOTOR_TEMP_NORMAL[1], MOTOR_TEMP_EMERGENCY[1]))
         self.inverter_temp_ui.config(

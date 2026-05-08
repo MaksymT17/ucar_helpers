@@ -6,9 +6,18 @@
 enum class CoolingAction {
     LIQUID_WARM = -1,
     TURNED_OFF = 0,
-    // PASSIVE mode removed as it means no active cooling
-    ACTIVE_FAN = 2,
-    LIQUID_COLD = 3
+    LIQUID_LOW = 1,
+    LIQUID_MED = 2,
+    LIQUID_HIGH = 3
+};
+
+enum class PrecheckStatus {
+    Initializing = 0,
+    HeatingBattery = 1,
+    CoolingBattery = 2,
+    HeatingPT = 3,
+    CoolingPT = 4,
+    Ready = 5
 };
 
 enum class DriveMode {
@@ -30,6 +39,7 @@ public:
     void setAmbientTemp(double t);
     void setWindSpeed(double w) { windSpeed = w; }
     void setDriveMode(int index);
+    void setIgnition(bool on);
 
     // State Getters
     double getSpeedKmh() const { return speed * 3.6; }
@@ -49,6 +59,11 @@ public:
     bool isEmergency() const { return emergencyShutdown; }
     bool isDerated() const { return thermalDerate; }
     DriveMode getDriveMode() const { return driveMode; }
+    bool isIgnitionOn() const { return ignitionOn; }
+    double getThrottle() const { return throttle; }
+    double getBrake() const { return brake; }
+    double get12VPercentage() const { return (battery12VEnergy / battery12VCapacity) * 100.0; }
+    PrecheckStatus getPrecheckStatus() const { return precheckStatus; }
 
     void setSurfaceType(int typeIndex);
 
@@ -83,6 +98,7 @@ private:
     static constexpr double INV_CRITICAL      = 120.0;
 
     static constexpr double BAT_OPTIMAL_MAX   = 35.0;
+    static constexpr double BAT_OPTIMAL_MIN   = 20.0; // Optimal minimum for battery temperature
     static constexpr double BAT_NORMAL_MAX    = 45.0;
     static constexpr double BAT_CRITICAL      = 50.0;
 
@@ -90,12 +106,18 @@ private:
     static constexpr double INV_COLD_LIMIT    = -20.0;
     static constexpr double BAT_COLD_LIMIT    = -10.0;
 
+    // Thermal Management Thresholds for Heater/Chiller Activation (with hysteresis)
+    static constexpr double BAT_OPTIMAL_MIN_HEATER_ON = 18.0;
+    static constexpr double BAT_OPTIMAL_MAX_CHILLER_ON = 37.0;
+    static constexpr double PT_OPTIMAL_MIN_HEATER_ON = 38.0; // Using a lower bound for PT coolant
+    static constexpr double PT_OPTIMAL_MAX_CHILLER_ON = 82.0; // Using an upper bound for PT coolant
+
     // Thermal Constants
     static constexpr double NATURAL_CONVECTION    = 5.0;
-    static constexpr double PASSIVE_COOLING       = 15.0;
-    static constexpr double ACTIVE_FAN_COOLING    = 60.0;
-    static constexpr double LIQUID_COOLING_ACTIVE  = 200.0;
-    static constexpr double LIQUID_COOLING_PASSIVE = 80.0;
+    static constexpr double LIQUID_COOLING_LOW     = 120.0;
+    static constexpr double LIQUID_COOLING_MED     = 250.0;
+    static constexpr double LIQUID_COOLING_HIGH    = 450.0;
+    static constexpr double LIQUID_COOLING_WARM    = 60.0;
     static constexpr double RAM_AIR_K             = 0.06;
     static constexpr double COOLANT_PT_RAD_H      = 80.0;
     static constexpr double COOLANT_BAT_RAD_H     = 120.0;
@@ -144,13 +166,29 @@ private:
     CoolingAction inverterAction = CoolingAction::TURNED_OFF;
     CoolingAction batteryAction = CoolingAction::TURNED_OFF;
     double coolingPollTimer = 0.0;
+    PrecheckStatus precheckStatus = PrecheckStatus::Initializing;
 
     // Auxiliary Loads
     bool lowBeamsOn = false;
     bool highBeamsOn = false;
+    bool ignitionOn = false;
+    bool dcdcActive = false;
+    bool batteryHeaterOn = false;
+    double batteryHeaterPowerDraw = 3000.0; // Example: 3kW heater
+    bool batteryChillerOn = false;
+    double batteryChillerPowerDraw = 1000.0; // Example: 1kW chiller
+    bool ptHeaterOn = false;
+    double ptHeaterPowerDraw = 2000.0; // Example: 2kW heater for PT loop
+    bool ptChillerOn = false;
+    double ptChillerPowerDraw = 1500.0; // Example: 1.5kW chiller for PT loop
     double infotainmentPowerDraw = 150.0; // Standard compute/screen load
     bool acOn = false;
     double acTargetTemp = 22.0;
+
+    // 12V Auxiliary System
+    double battery12VEnergy = 2592000.0; // 60Ah * 12V in Joules
+    const double battery12VCapacity = 2592000.0;
+    const double DCDC_MAX_POWER = 1500.0; // 1.5kW DC-DC Converter
     static constexpr double SYSTEM_BASE_LOAD = 250.0; // Computers, sensors, etc.
 
     void updateDeviceCooling(double temp, double optimalMax, double normalMax, CoolingAction &action);
@@ -175,6 +213,9 @@ private:
     const double motorThermalMass = 22000.0;
     const double batteryThermalMass = 309000.0;
     const double inverterThermalMass = 3400.0;
-};
 
+    void updateBatteryThermalManagement();
+    void updatePTThermalManagement();
+    void updatePrecheckLogic();
+};
 #endif

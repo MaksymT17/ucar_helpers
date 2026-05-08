@@ -9,6 +9,26 @@ EVPowertrainSimulator::EVPowertrainSimulator() {
     currentDragCoeffMultiplier = ASPHALT_DRAG_COEFF_MULTIPLIER;
 }
 
+void EVPowertrainSimulator::setIgnition(bool on) {
+    // Safety: prevent stopping the high-voltage system while the vehicle is in motion (> 1 km/h)
+    if (!on && speed > 0.28) { 
+        spdlog::warn("Ignition stop rejected: Safety lock active while vehicle in motion ({:.1f} km/h)", speed * 3.6);
+        return;
+    }
+
+    ignitionOn = on;
+    spdlog::info("Ignition set to: {}", on ? "ON" : "OFF");
+
+    // Reset thermal management flags when turning off
+    if (!on) {
+        batteryHeaterOn = false;
+        batteryChillerOn = false;
+        ptHeaterOn = false;
+        ptChillerOn = false;
+        precheckStatus = PrecheckStatus::Initializing;
+    }
+}
+
 void EVPowertrainSimulator::update(double dt) {
     tripTime += dt;
     modeSwitchTimer += dt;
@@ -17,21 +37,58 @@ void EVPowertrainSimulator::update(double dt) {
     // Cold air is denser (more drag), hot air is thinner (less drag)
     double airDensity = AIR_PRESSURE_SEA_LEVEL / (SPECIFIC_GAS_CONST_AIR * (ambientTemp + 273.15));
 
-    // 1. Auxiliary Power Budgeting
-    // In a real car, the motor only gets what the battery has left after cabin systems
-    double ac_power = 0.0;
+    // 1. Auxiliary Power Budgeting (12V vs High Voltage)
+    // LV systems are available as soon as we "jump into the car"
+    double lv_load = SYSTEM_BASE_LOAD + infotainmentPowerDraw;
+    double light_power = highBeamsOn ? 250.0 : (lowBeamsOn ? 100.0 : 0.0);
+    lv_load += light_power;
+
+    double hv_aux_load = 0.0;          // Pulls from Traction Pack
+
+    // AC Compressor is high-voltage (HV) and available in standby/ACC
+    // In our single button logic, we'll allow AC to run if ignition is requested or always on
     if (acOn) {
         double temp_diff = std::abs(ambientTemp - acTargetTemp);
-        ac_power = std::clamp(temp_diff * 250.0, 500.0, 5000.0);
+        hv_aux_load += std::clamp(temp_diff * 250.0, 500.0, 5000.0);
     }
-    double light_power = highBeamsOn ? 250.0 : (lowBeamsOn ? 100.0 : 0.0);
-    double aux_load = ac_power + SYSTEM_BASE_LOAD + infotainmentPowerDraw + light_power;
+
+    // 1a. 12V System Maintenance (DC-DC Converter)
+    // If 12V battery is low, DC-DC pulls from HV Traction pack to charge it
+    // Implement hysteresis: Start at 80%, Stop at 98% to prevent rapid oscillation (blinking)
+    if (battery12VEnergy < (battery12VCapacity * 0.80)) {
+        dcdcActive = true;
+    } else if (battery12VEnergy >= (battery12VCapacity * 0.98)) {
+        dcdcActive = false;
+    }
+
+    if (dcdcActive) {
+        double charging_power = DCDC_MAX_POWER; 
+        hv_aux_load += (charging_power / 0.92); // Accounting for 92% DC-DC efficiency
+        battery12VEnergy += charging_power * dt;
+    }
+    battery12VEnergy -= lv_load * dt;
+    battery12VEnergy = std::clamp(battery12VEnergy, 0.0, battery12VCapacity);
+
+    // 1b. High-Voltage Thermal Management (ONLY active during Ignition)
+    if (ignitionOn) {
+        if (batteryHeaterOn) hv_aux_load += batteryHeaterPowerDraw;
+        if (batteryChillerOn) hv_aux_load += batteryChillerPowerDraw;
+        if (ptHeaterOn) hv_aux_load += ptHeaterPowerDraw;
+        if (ptChillerOn) hv_aux_load += ptChillerPowerDraw;
+    }
 
     // If Emergency: strictly lock to 20%. Otherwise: apply Thermal Derate and Drive Mode.
     double modeMultiplier = emergencyShutdown ? 0.20 : (thermalDerate ? 0.70 : 1.0) * driveModeLimit;
     
+    // If ignition is off or pre-checks not ready, prevent propulsion
+    if (!ignitionOn || precheckStatus != PrecheckStatus::Ready) {
+        throttle = 0.0;
+        brake = 1.0; // Force brake to ensure no movement
+        modeMultiplier = 0.0; // No propulsion power
+    }
+
     // Total available power from battery after mode restrictions and aux loads
-    double available_battery_power = (maxPower * modeMultiplier) - aux_load;
+    double available_battery_power = (maxPower * modeMultiplier) - hv_aux_load;
     // Net power available for propulsion (accounting for approx 94% motor/inv efficiency)
     double propulsion_limit = std::max(0.0, available_battery_power * 0.94);
 
@@ -49,7 +106,7 @@ void EVPowertrainSimulator::update(double dt) {
     double angular_vel = speed / wheelRadius;
     double motor_rpm = (angular_vel * 60.0 / (2.0 * M_PI)) * 9.04;
     
-    double max_avail_torque = (motor_rpm < 5000) ? 
+    double max_avail_torque = (motor_rpm < 5000) ?
         maxWheelTorque : std::min(maxWheelTorque, propulsion_limit / std::max(0.01, speed / wheelRadius));
     
     // 1a. RPM Safety Limiter (Tesla RDU structural limit at 18,000 RPM)
@@ -77,8 +134,14 @@ void EVPowertrainSimulator::update(double dt) {
     
     // 4. Physics Integration
     double acceleration = net_force / mass;
+    bool wasMoving = speed > 0.01; // 0.01 m/s threshold
     speed = std::max(0.0, speed + acceleration * dt);
     distance += speed * dt;
+
+    // Reset brake to 0.0 if we just came to a full stop while driving
+    if (wasMoving && speed <= 0.0 && ignitionOn && precheckStatus == PrecheckStatus::Ready) {
+        brake = 0.0;
+    }
 
     // 5. Energy Consumption
     double mech_power = (throttle * powerLimit * max_avail_torque) * (speed / wheelRadius);
@@ -95,7 +158,7 @@ void EVPowertrainSimulator::update(double dt) {
     double inv_eff = std::max(0.85, INV_ETA_BASE - (INV_K_SWITCH * throttle));
 
     // Total electrical draw: mech_power corrected by inverter/motor efficiency + cabin aux
-    double electrical_draw = (mech_power / (motor_eff * inv_eff)) + aux_load;
+    double electrical_draw = (mech_power / (motor_eff * inv_eff)) + hv_aux_load;
 
     // Battery Heat based on current (I = P/V)
     double battery_current = electrical_draw / current_voltage;
@@ -134,15 +197,23 @@ void EVPowertrainSimulator::update(double dt) {
         double q_air_base = NATURAL_CONVECTION * (temp - ambientTemp);
         heatToCoolant = 0.0;
 
-        if (action == CoolingAction::LIQUID_COLD || action == CoolingAction::LIQUID_WARM) {
-            double h_liq = (action == CoolingAction::LIQUID_COLD) ? LIQUID_COOLING_ACTIVE : LIQUID_COOLING_PASSIVE;
+        if (action != CoolingAction::TURNED_OFF) {
+            double h_liq = 0.0;
+            switch(action) {
+                case CoolingAction::LIQUID_WARM: 
+                    h_liq = LIQUID_COOLING_WARM; 
+                    // Logic: Fans remain OFF, only pump runs to distribute heat
+                    break;
+                case CoolingAction::LIQUID_LOW:  h_liq = LIQUID_COOLING_LOW; break;
+                case CoolingAction::LIQUID_MED:  h_liq = LIQUID_COOLING_MED; break;
+                case CoolingAction::LIQUID_HIGH: h_liq = LIQUID_COOLING_HIGH; break;
+                default: break;
+            }
             double q_liq = h_liq * (temp - refCoolantTemp);
             heatToCoolant = std::max(0.0, q_liq); // Only positive transfer heats the coolant loop
             return q_air_base + q_liq;
         } else {
-            double h_extra = (action == CoolingAction::TURNED_OFF) ? PASSIVE_COOLING : 
-                             (action == CoolingAction::ACTIVE_FAN) ? ACTIVE_FAN_COOLING : 0.0;
-            return q_air_base + (h_extra * (temp - ambientTemp));
+            return q_air_base;
         }
     };
 
@@ -158,16 +229,41 @@ void EVPowertrainSimulator::update(double dt) {
     // 7. Coolant Loop Physics (Radiator + Ram Air)
     // Radiator cooling depends on the magnitude of relative air velocity
     double h_ram_boost = RAM_AIR_K * v_rel * v_rel;
+
+    // Dynamic Fan Rejection (Hardware Logic: PT=2 fans, BAT=1 fan)
+    // PT Loop: Escalate from 1 fan to 2 fans based on demand
+    double pt_fan_boost = 0.0;
+    if (motorAction == CoolingAction::LIQUID_HIGH || inverterAction == CoolingAction::LIQUID_HIGH)
+        pt_fan_boost = 120.0; // Both fans at max
+    else if (motorAction >= CoolingAction::LIQUID_LOW || inverterAction >= CoolingAction::LIQUID_LOW)
+        pt_fan_boost = 50.0;  // Single fan or low-duty cycle
+
+    // Bat Loop: Single auxiliary fan
+    double bat_fan_boost = (batteryAction >= CoolingAction::LIQUID_LOW) ? 60.0 : 0.0;
     
     // Powertrain Loop (Motor + Inverter)
-    double pt_rad_diss = (COOLANT_PT_RAD_H + h_ram_boost) * (coolantPTTemp - ambientTemp);
+    double pt_rad_diss = (COOLANT_PT_RAD_H + pt_fan_boost + h_ram_boost) * (coolantPTTemp - ambientTemp);
     coolantPTTemp += ((mToPT + iToPT - pt_rad_diss) * dt) / COOLANT_PT_MASS;
 
     // Battery Loop
-    double bat_rad_diss = (COOLANT_BAT_RAD_H + h_ram_boost) * (coolantBatTemp - ambientTemp);
-    coolantBatTemp += ((bToBat - bat_rad_diss) * dt) / COOLANT_BAT_MASS;
+    double heat_from_battery_heater = batteryHeaterOn ? batteryHeaterPowerDraw : 0.0; // Heater directly adds heat to coolant
+    double heat_from_battery_chiller = batteryChillerOn ? -batteryChillerPowerDraw : 0.0; // Chiller removes heat
+    double bat_rad_diss = (COOLANT_BAT_RAD_H + bat_fan_boost + h_ram_boost) * (coolantBatTemp - ambientTemp); // Radiator dissipates heat
+    coolantBatTemp += ((bToBat + heat_from_battery_heater + heat_from_battery_chiller - bat_rad_diss) * dt) / COOLANT_BAT_MASS;
+
+    // Powertrain Loop (Heater/Chiller)
+    double heat_from_pt_heater = ptHeaterOn ? ptHeaterPowerDraw : 0.0;
+    double heat_from_pt_chiller = ptChillerOn ? -ptChillerPowerDraw : 0.0;
+    coolantPTTemp += ((heat_from_pt_heater + heat_from_pt_chiller) * dt) / COOLANT_PT_MASS;
 
     // 8. Cooling System State Machine (Polled every 5s)
+    // Only run pre-checks and thermal management if Ignition is requested
+    if (ignitionOn) {
+        updatePrecheckLogic(); 
+        updateBatteryThermalManagement();
+        updatePTThermalManagement();
+    }
+
     coolingPollTimer += dt;
     if (coolingPollTimer >= 5.0) {
         coolingPollTimer = 0.0;
@@ -222,28 +318,105 @@ void EVPowertrainSimulator::update(double dt) {
 
 void EVPowertrainSimulator::updateDeviceCooling(double temp, double optimalMax, double normalMax, CoolingAction &action) {
     if (temp <= optimalMax) {
-        // De-escalate cooling
-        if (action == CoolingAction::LIQUID_COLD) {
-            action = CoolingAction::ACTIVE_FAN;
-        } else if (action == CoolingAction::ACTIVE_FAN) {
-            action = CoolingAction::TURNED_OFF;
-        } else { // LIQUID_WARM or TURNED_OFF
-            action = CoolingAction::TURNED_OFF;
-        }
+        // De-escalate cooling toward TURNED_OFF
+        if (action == CoolingAction::LIQUID_HIGH)      action = CoolingAction::LIQUID_MED;
+        else if (action == CoolingAction::LIQUID_MED)  action = CoolingAction::LIQUID_LOW;
+        else                                           action = CoolingAction::TURNED_OFF;
     } else if (temp <= normalMax) {
-        // Within normal range, but above optimal.
-        // If currently in an active cooling state (ACTIVE_FAN, LIQUID_COLD), de-escalate to TURNED_OFF.
-        // If already TURNED_OFF or LIQUID_WARM, stay there.
-        action = CoolingAction::TURNED_OFF; // No active cooling needed in normal range
-    } else { // temp > normalMax (Escalate)
-        // Escalate cooling
-        if (action == CoolingAction::TURNED_OFF) {
-            action = CoolingAction::ACTIVE_FAN;
-        } else if (action == CoolingAction::ACTIVE_FAN) {
-            action = CoolingAction::LIQUID_COLD;
-        } else { // LIQUID_COLD or LIQUID_WARM
-            action = CoolingAction::LIQUID_COLD;
+        // Maintain LIQUID_LOW if already cooling, otherwise allow passive soak
+        if (action > CoolingAction::LIQUID_LOW) {
+            action = CoolingAction::LIQUID_LOW;
         }
+    } else { // temp > normalMax (Escalate)
+        // Step up liquid flow rates to increase heat transfer
+        if (action == CoolingAction::TURNED_OFF || action == CoolingAction::LIQUID_WARM) {
+            action = CoolingAction::LIQUID_LOW;
+        } else if (action == CoolingAction::LIQUID_LOW) {
+            action = CoolingAction::LIQUID_MED;
+        } else {
+            action = CoolingAction::LIQUID_HIGH;
+        }
+    }
+}
+
+void EVPowertrainSimulator::updateBatteryThermalManagement() {
+    // Battery Warming
+    if (batteryTemp < BAT_OPTIMAL_MIN_HEATER_ON) {
+        if (!batteryHeaterOn) { spdlog::info("Battery heater ON: {:.1f}°C", batteryTemp); }
+        batteryHeaterOn = true;
+    } else if (batteryTemp >= BAT_OPTIMAL_MIN + 2.0) { // Hysteresis for turning off heater
+        if (batteryHeaterOn) { spdlog::info("Battery heater OFF: {:.1f}°C", batteryTemp); }
+        batteryHeaterOn = false;
+    }
+
+    // Battery Cooling (Chiller)
+    if (batteryTemp > BAT_OPTIMAL_MAX_CHILLER_ON) {
+        if (!batteryChillerOn) { spdlog::info("Battery chiller ON: {:.1f}°C", batteryTemp); }
+        batteryChillerOn = true;
+    } else if (batteryTemp <= BAT_OPTIMAL_MAX - 2.0) { // Hysteresis for turning off chiller
+        if (batteryChillerOn) { spdlog::info("Battery chiller OFF: {:.1f}°C", batteryTemp); }
+        batteryChillerOn = false;
+    }
+}
+
+void EVPowertrainSimulator::updatePTThermalManagement() {
+    // PT Warming
+    if (coolantPTTemp < PT_OPTIMAL_MIN_HEATER_ON) {
+        if (!ptHeaterOn) { spdlog::info("PT heater ON: {:.1f}°C", coolantPTTemp); }
+        ptHeaterOn = true;
+    } else if (coolantPTTemp >= MOTOR_OPTIMAL_MAX + 2.0) { // Hysteresis for turning off heater
+        if (ptHeaterOn) { spdlog::info("PT heater OFF: {:.1f}°C", coolantPTTemp); }
+        ptHeaterOn = false;
+    }
+
+    // PT Cooling (Chiller)
+    if (coolantPTTemp > PT_OPTIMAL_MAX_CHILLER_ON) {
+        if (!ptChillerOn) { spdlog::info("PT chiller ON: {:.1f}°C", coolantPTTemp); }
+        ptChillerOn = true;
+    } else if (coolantPTTemp <= MOTOR_OPTIMAL_MAX - 2.0) { // Hysteresis for turning off chiller
+        if (ptChillerOn) { spdlog::info("PT chiller OFF: {:.1f}°C", coolantPTTemp); }
+        ptChillerOn = false;
+    }
+}
+
+void EVPowertrainSimulator::updatePrecheckLogic() {
+    // Battery Pre-check
+    if (batteryTemp < BAT_OPTIMAL_MIN) {
+        precheckStatus = PrecheckStatus::HeatingBattery;
+        return;
+    }
+    if (batteryTemp > BAT_OPTIMAL_MAX) {
+        precheckStatus = PrecheckStatus::CoolingBattery;
+        return;
+    }
+
+    // Powertrain Pre-check (using coolant temp as proxy for overall PT temp)
+    // Note: Motor/Inverter optimal max are used here for the PT loop's "ready" state
+    if (coolantPTTemp < MOTOR_COLD_LIMIT) { // Only block if below structural limits (-20C)
+        precheckStatus = PrecheckStatus::HeatingPT;
+        return;
+    }
+    if (coolantPTTemp > MOTOR_OPTIMAL_MAX + 5.0) { // Allow some buffer for PT to cool down
+        precheckStatus = PrecheckStatus::CoolingPT;
+        return;
+    }
+
+    // If all checks pass
+    if (precheckStatus != PrecheckStatus::Ready) {
+        spdlog::info("Pre-checks complete. System Ready.");
+    }
+    precheckStatus = PrecheckStatus::Ready;
+}
+
+void EVPowertrainSimulator::setAmbientTemp(double t) {
+    ambientTemp = t;
+    // Apply equilibrium only if vehicle is at rest AND has not yet started its journey
+    if (speed < 0.1 && distance < 0.001) {
+        motorTemp = t;
+        inverterTemp = t;
+        batteryTemp = t;
+        coolantPTTemp = t;
+        coolantBatTemp = t;
     }
 }
 
@@ -265,18 +438,6 @@ void EVPowertrainSimulator::setSurfaceType(int typeIndex) {
             currentRollingResistCoeff = ASPHALT_ROLLING_RESIST_COEFF;
             currentDragCoeffMultiplier = ASPHALT_DRAG_COEFF_MULTIPLIER;
             break;
-    }
-}
-
-void EVPowertrainSimulator::setAmbientTemp(double t) {
-    ambientTemp = t;
-    // Apply equilibrium only if vehicle is at rest AND has not yet started its journey
-    if (speed < 0.1 && distance < 0.001) { 
-        motorTemp = t;
-        inverterTemp = t;
-        batteryTemp = t;
-        coolantPTTemp = t;
-        coolantBatTemp = t;
     }
 }
 
