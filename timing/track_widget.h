@@ -6,6 +6,7 @@
 #include <QPainterPath>
 #include <QTimer>
 #include <vector>
+#include <QColor>
 
 struct TelemetryEntry {
     // QPointF normalizedPos; // Removed as car position is now driven by progress along the main trackPath
@@ -19,6 +20,13 @@ struct TrackConfig {
     QString name;
     QString imagePath;
     std::vector<QPointF> points; // Normalized 0.0 to 1.0
+};
+
+struct DriverSimState {
+    QString abbreviation;
+    std::vector<TelemetryEntry> telemetry;
+    float distanceTraveled = 0.0f;
+    QColor color;
 };
 
 class MonzaSimWidget : public QWidget {
@@ -43,11 +51,11 @@ private:
     QPixmap background;
     QPainterPath trackPath;
     QPainterPath scaledPath; // Path scaled to current widget size
+    QRect m_drawRect;        // Actual area where the track image is drawn
     
-    float progress; // 0.0 to 1.0
     float currentSpeed; 
     float maxSpeed; // Removed const to allow calculation
-    std::vector<TelemetryEntry> telemetryData;
+    std::vector<DriverSimState> drivers;
     bool isDataDriven = false;
     QTimer *animationTimer;
 };
