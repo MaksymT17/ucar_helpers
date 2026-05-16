@@ -9,7 +9,8 @@
 #include <QColor>
 
 struct TelemetryEntry {
-    // QPointF normalizedPos; // Removed as car position is now driven by progress along the main trackPath
+    float time;
+    QPointF normalizedPos; 
     float speed;
     float distance;
     float throttle;
@@ -26,14 +27,15 @@ struct DriverSimState {
     QString abbreviation;
     std::vector<TelemetryEntry> telemetry;
     float distanceTraveled = 0.0f;
+    size_t lastIndex = 0;
     QColor color;
 };
 
-class MonzaSimWidget : public QWidget {
+class TrackSimulatorWidget : public QWidget {
     Q_OBJECT
 
 public:
-    explicit MonzaSimWidget(QWidget *parent = nullptr);
+    explicit TrackSimulatorWidget(QWidget *parent = nullptr);
     void loadTrack(const TrackConfig& config);
     bool loadTelemetry(const QString& csvPath);
 
@@ -50,9 +52,11 @@ private:
     
     QPixmap background;
     QPainterPath trackPath;
-    QPainterPath scaledPath; // Path scaled to current widget size
-    QRect m_drawRect;        // Actual area where the track image is drawn
+    QPainterPath scaledPath; // Path scaled to current widget size (full widget)
     
+    float simTime = 0.0f;
+    size_t maxRevealedIndex = 0;
+    bool lapCompleted = false;
     float currentSpeed; 
     float maxSpeed; // Removed const to allow calculation
     std::vector<DriverSimState> drivers;

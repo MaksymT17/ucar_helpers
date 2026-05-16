@@ -13,11 +13,18 @@ for driver_number in session.drivers:
     # Get all laps for the driver
     driver_laps = session.laps.pick_driver(driver_number)
     
-    if not driver_laps.empty:
-        # Get telemetry for all laps combined
-        telemetry = driver_laps.get_telemetry()
-        
+    # Filter for Race Laps only (Lap 1 onwards) to ensure we start at the grid
+    race_laps = driver_laps[driver_laps['LapNumber'] >= 1]
+
+    if not race_laps.empty:
+        # Get telemetry for race laps
+        telemetry = race_laps.get_telemetry()
+
+        # Normalize Time: Subtract the start time of the first race lap
+        start_time = telemetry['Time'].iloc[0]
+        telemetry['TimeSeconds'] = (telemetry['Time'] - start_time).dt.total_seconds()
+
         # Export to a separate CSV file named by year, GP, and driver abbreviation
         filename = f'australia_2026_{abb}_telemetry.csv'
-        telemetry[['X', 'Y', 'Speed', 'Distance', 'Throttle', 'Brake']].to_csv(filename)
+        telemetry[['TimeSeconds', 'X', 'Y', 'Speed', 'Distance', 'Throttle', 'Brake']].to_csv(filename)
         print(f"Exported telemetry for {abb} to {filename}")
