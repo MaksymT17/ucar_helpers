@@ -50,16 +50,16 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
     QTextStream in(&file);
     QString header = in.readLine(); // Skip header
     
-    struct RawEntry { float time, x, y, speed, distance, throttle, brake; };
+    struct RawEntry { float time, x, y, speed, distance, throttle, brake; int lap; };
     std::vector<RawEntry> rawData;
     float minX = 1e10, maxX = -1e10, minY = 1e10, maxY = -1e10;
 
     while (!in.atEnd()) {
         QString line = in.readLine();
         QStringList fields = line.split(',');
-        if (fields.size() < 8) continue;
+        if (fields.size() < 9) continue;
 
-        // CSV format: Index, TimeSeconds, X, Y, Speed, Distance, Throttle, Brake
+        // CSV format: Index, TimeSeconds, X, Y, Speed, Distance, Throttle, Brake, LapNumber
         RawEntry entry;
         entry.time = fields[1].toFloat();
         entry.x = fields[2].toFloat();
@@ -68,6 +68,7 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
         entry.distance = fields[5].toFloat();
         entry.throttle = fields[6].toFloat();
         entry.brake = fields[7].toFloat();
+        entry.lap = fields[8].toInt();
 
         // Filter out (0,0) outliers which are common in garage/pit telemetry
         // These distort the scaling and create the "lines across the middle"
@@ -111,12 +112,16 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
         t.distance = rawData[i].distance;
         t.throttle = rawData[i].throttle;
         t.brake = rawData[i].brake;
+        t.lapNumber = rawData[i].lap;
         newDriver.telemetry.push_back(t);
     }
 
     // Start exactly at the beginning of the race telemetry (the Grid)
     newDriver.distanceTraveled = newDriver.telemetry.front().distance;
     newDriver.lastIndex = 0;
+    newDriver.currentLap = !newDriver.telemetry.empty() ? newDriver.telemetry.front().lapNumber : 1;
+    newDriver.lapStartTime = 0.0f;
+    newDriver.lastLapTime = 0.0f;
 
     maxRevealedIndex = 0;
     lapCompleted = false;
@@ -182,10 +187,24 @@ void TrackSimulatorWidget::updateAnimation() {
         for (auto& driver : drivers) {
             if (driver.telemetry.empty()) continue;
 
-            // Use session timestamps to find the current position
+            // Support for seeking/resets: if time jumped back, restart search from beginning
+            if (simTime < driver.telemetry[driver.lastIndex].time) {
+                driver.lastIndex = 0;
+            }
+
+            // Find the point that corresponds to current simulation time
             while (driver.lastIndex < driver.telemetry.size() - 1 &&
-                   driver.telemetry[driver.lastIndex].time < simTime) {
+                   driver.telemetry[driver.lastIndex + 1].time <= simTime) {
                 driver.lastIndex++;
+            }
+
+            // Detect Lap Change
+            int newLap = driver.telemetry[driver.lastIndex].lapNumber;
+            if (newLap > driver.currentLap) {
+                driver.lastLapTime = driver.telemetry[driver.lastIndex].time - driver.lapStartTime;
+                driver.lapStartTime = driver.telemetry[driver.lastIndex].time;
+                driver.currentLap = newLap;
+                qDebug() << "Driver" << driver.abbreviation << "completed Lap" << newLap - 1 << "in" << driver.lastLapTime << "s";
             }
 
             // Track the furthest point reached across all drivers
@@ -196,13 +215,11 @@ void TrackSimulatorWidget::updateAnimation() {
             // Keep distanceTraveled synced for any distance-based logic
             driver.distanceTraveled = driver.telemetry[driver.lastIndex].distance;
 
-            // Reset if we reach the end of the race data
-            if (driver.lastIndex >= driver.telemetry.size() - 1) 
-            {
-                lapCompleted = true; // Once a lap is done, keep the whole line visible
-                simTime = driver.telemetry.front().time;
-                for(auto& d : drivers) d.lastIndex = 0;
-            }        }
+            // Keep track line visible once the lead driver finishes
+            if (&driver == &drivers[0] && driver.lastIndex >= driver.telemetry.size() - 1) {
+                lapCompleted = true;
+            }
+        }
         update();
         return;
     }
@@ -240,6 +257,14 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
 
+    // Helper for timing format: M:SS.ms
+    auto formatTime = [](float seconds) -> QString {
+        if (seconds <= 0) return "--:--.---";
+        int m = static_cast<int>(seconds) / 60;
+        float s = std::fmod(seconds, 60.0f);
+        return QString("%1:%2").arg(m).arg(s, 6, 'f', 3, '0');
+    };
+
     // 1. Draw Background
     // The background image is no longer used. Fill the entire widget with black.
     painter.fillRect(rect(), Qt::black);
@@ -247,7 +272,8 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
     // 2. Draw Track Line (Reveal logic)
     if (!drivers.empty()) {
         const auto& refTelemetry = drivers[0].telemetry;
-        size_t limit = lapCompleted ? refTelemetry.size() : maxRevealedIndex;
+        // Clamp limit to reference telemetry size to prevent crashes
+        size_t limit = lapCompleted ? refTelemetry.size() : std::min(maxRevealedIndex, refTelemetry.size());
 
         if (limit > 1) {
             painter.setPen(QPen(QColor(255, 255, 255, 80), 2));
@@ -268,25 +294,69 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
     for (const auto& driver : drivers) {
         if (driver.telemetry.empty()) continue;
 
-        size_t index = driver.lastIndex;
+        QPointF interpPos;
+        size_t idx = driver.lastIndex;
 
-        // Map the stored telemetry point to the current widget scaling
-        QPointF normPos = driver.telemetry[index].normalizedPos;
-        // Scale normalizedPos (0-1) directly to widget coordinates
-        QPointF carPos = QPointF(normPos.x() * width(), normPos.y() * height());
+        // Linear Interpolation: Smooth out movement between telemetry samples
+        if (idx < driver.telemetry.size() - 1) {
+            const auto& t0 = driver.telemetry[idx];
+            const auto& t1 = driver.telemetry[idx + 1];
+            float segmentDuration = t1.time - t0.time;
+            
+            float factor = (segmentDuration > 0.001f) 
+                ? std::clamp((simTime - t0.time) / segmentDuration, 0.0f, 1.0f) 
+                : 0.0f;
+
+            interpPos = t0.normalizedPos + (t1.normalizedPos - t0.normalizedPos) * factor;
+        } else {
+            interpPos = driver.telemetry[idx].normalizedPos;
+        }
+
+        QPointF carPos(interpPos.x() * width(), interpPos.y() * height());
         
         painter.setBrush(driver.color);
         painter.setPen(QPen(Qt::white, 1));
         painter.drawEllipse(carPos, 10, 10);
         
-        // Draw Label
-        painter.drawText(carPos + QPointF(12, 5), driver.abbreviation);
+        // Draw Simple Label: "VER (L5)"
+        QString label = QString("%1 (L%2)").arg(driver.abbreviation).arg(driver.currentLap);
+        painter.drawText(carPos + QPointF(12, 5), label);
     }
 
-    // Basic Info Overlay
+    // 4. Leaderboard Grid (Top Left)
     painter.setPen(Qt::yellow);
-    painter.drawText(20, 30, "Australia GP 2026 Visualization");
+    painter.drawText(20, 30, "AUSTRALIA GRAND PRIX 2026 - LIVE TRACKING");
+    
     if (drivers.empty()) {
         painter.drawText(20, 50, "Waiting for telemetry data...");
+    } else {
+        painter.setPen(QColor(255, 255, 255, 180));
+        int gridY = 60;
+        // Grid Headers
+        painter.drawText(20, gridY, "POS"); 
+        painter.drawText(60, gridY, "DRIVER"); 
+        painter.drawText(130, gridY, "LAP"); 
+        painter.drawText(180, gridY, "LAST LAP");
+        
+        painter.setPen(QColor(255, 255, 255, 50));
+        painter.drawLine(20, gridY + 5, 280, gridY + 5);
+        gridY += 25;
+
+        // Sort drivers by distance to determine position
+        std::vector<const DriverSimState*> leaderboard;
+        for (const auto& d : drivers) leaderboard.push_back(&d);
+        std::sort(leaderboard.begin(), leaderboard.end(), [](const DriverSimState* a, const DriverSimState* b) {
+            return a->distanceTraveled > b->distanceTraveled;
+        });
+
+        for (size_t i = 0; i < leaderboard.size(); ++i) {
+            painter.setPen(leaderboard[i]->color);
+            painter.drawText(20, gridY, QString::number(i + 1));
+            painter.setPen(Qt::white);
+            painter.drawText(60, gridY, leaderboard[i]->abbreviation);
+            painter.drawText(130, gridY, QString::number(leaderboard[i]->currentLap));
+            painter.drawText(180, gridY, formatTime(leaderboard[i]->lastLapTime));
+            gridY += 20;
+        }
     }
 }

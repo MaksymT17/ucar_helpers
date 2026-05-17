@@ -15,6 +15,7 @@ struct TelemetryEntry {
     float distance;
     float throttle;
     float brake;
+    int lapNumber;
 };
 
 struct TrackConfig {
@@ -27,6 +28,9 @@ struct DriverSimState {
     QString abbreviation;
     std::vector<TelemetryEntry> telemetry;
     float distanceTraveled = 0.0f;
+    float lastLapTime = 0.0f;
+    float lapStartTime = 0.0f;
+    int currentLap = 1;
     size_t lastIndex = 0;
     QColor color;
 };

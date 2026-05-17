@@ -1,4 +1,5 @@
 import fastf1
+import pandas as pd
 
 # Load the 2026 Australian Grand Prix Race session
 session = fastf1.get_session(2026, 'Australia', 'R')
@@ -17,8 +18,13 @@ for driver_number in session.drivers:
     race_laps = driver_laps[driver_laps['LapNumber'] >= 1]
 
     if not race_laps.empty:
-        # Get telemetry for race laps
-        telemetry = race_laps.get_telemetry()
+        # Get telemetry lap by lap to include LapNumber in the resulting data
+        all_telemetry = []
+        for _, lap in race_laps.iterrows():
+            t = lap.get_telemetry()
+            t['LapNumber'] = lap['LapNumber']
+            all_telemetry.append(t)
+        telemetry = pd.concat(all_telemetry)
 
         # Normalize Time: Subtract the start time of the first race lap
         start_time = telemetry['Time'].iloc[0]
@@ -26,5 +32,5 @@ for driver_number in session.drivers:
 
         # Export to a separate CSV file named by year, GP, and driver abbreviation
         filename = f'australia_2026_{abb}_telemetry.csv'
-        telemetry[['TimeSeconds', 'X', 'Y', 'Speed', 'Distance', 'Throttle', 'Brake']].to_csv(filename)
+        telemetry[['TimeSeconds', 'X', 'Y', 'Speed', 'Distance', 'Throttle', 'Brake', 'LapNumber']].to_csv(filename, index=True)
         print(f"Exported telemetry for {abb} to {filename}")
