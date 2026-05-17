@@ -43,6 +43,9 @@ public:
     void loadTrack(const TrackConfig& config);
     bool loadTelemetry(const QString& csvPath);
 
+signals:
+    void leaderboardUpdated(const QStringList &entries);
+
 protected:
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
@@ -60,6 +63,7 @@ private:
     
     float simTime = 0.0f;
     size_t maxRevealedIndex = 0;
+    float leaderboardTimer = 0.0f;
     bool lapCompleted = false;
     float currentSpeed; 
     float maxSpeed; // Removed const to allow calculation

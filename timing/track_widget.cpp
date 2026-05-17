@@ -183,6 +183,28 @@ void TrackSimulatorWidget::updateAnimation() {
 
     if (isDataDriven && !drivers.empty()) {
         simTime += 0.016f; // Advance session time by 16ms
+        leaderboardTimer += 0.016f;
+
+        // Update Leaderboard Order every 5 seconds (or immediately if just started)
+        if (leaderboardTimer >= 5.0f || (leaderboardTimer > 0.01f && leaderboardTimer < 0.04f)) {
+            leaderboardTimer = 0.0f;
+            
+            std::vector<const DriverSimState*> sorted;
+            for (const auto& d : drivers) sorted.push_back(&d);
+            std::sort(sorted.begin(), sorted.end(), [](const DriverSimState* a, const DriverSimState* b) {
+                return a->distanceTraveled > b->distanceTraveled;
+            });
+
+            QStringList entries;
+            for (size_t i = 0; i < sorted.size(); ++i) {
+                QString timeStr = (sorted[i]->lastLapTime > 0) 
+                    ? QString::number(sorted[i]->lastLapTime, 'f', 2) + "s" 
+                    : "--";
+                entries << QString("%1. %2 (L%3) - %4")
+                    .arg(i + 1).arg(sorted[i]->abbreviation).arg(sorted[i]->currentLap).arg(timeStr);
+            }
+            emit leaderboardUpdated(entries);
+        }
 
         for (auto& driver : drivers) {
             if (driver.telemetry.empty()) continue;
@@ -323,40 +345,8 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
         painter.drawText(carPos + QPointF(12, 5), label);
     }
 
-    // 4. Leaderboard Grid (Top Left)
-    painter.setPen(Qt::yellow);
-    painter.drawText(20, 30, "AUSTRALIA GRAND PRIX 2026 - LIVE TRACKING");
-    
     if (drivers.empty()) {
-        painter.drawText(20, 50, "Waiting for telemetry data...");
-    } else {
-        painter.setPen(QColor(255, 255, 255, 180));
-        int gridY = 60;
-        // Grid Headers
-        painter.drawText(20, gridY, "POS"); 
-        painter.drawText(60, gridY, "DRIVER"); 
-        painter.drawText(130, gridY, "LAP"); 
-        painter.drawText(180, gridY, "LAST LAP");
-        
-        painter.setPen(QColor(255, 255, 255, 50));
-        painter.drawLine(20, gridY + 5, 280, gridY + 5);
-        gridY += 25;
-
-        // Sort drivers by distance to determine position
-        std::vector<const DriverSimState*> leaderboard;
-        for (const auto& d : drivers) leaderboard.push_back(&d);
-        std::sort(leaderboard.begin(), leaderboard.end(), [](const DriverSimState* a, const DriverSimState* b) {
-            return a->distanceTraveled > b->distanceTraveled;
-        });
-
-        for (size_t i = 0; i < leaderboard.size(); ++i) {
-            painter.setPen(leaderboard[i]->color);
-            painter.drawText(20, gridY, QString::number(i + 1));
-            painter.setPen(Qt::white);
-            painter.drawText(60, gridY, leaderboard[i]->abbreviation);
-            painter.drawText(130, gridY, QString::number(leaderboard[i]->currentLap));
-            painter.drawText(180, gridY, formatTime(leaderboard[i]->lastLapTime));
-            gridY += 20;
-        }
+        painter.setPen(Qt::yellow);
+        painter.drawText(20, 30, "Waiting for telemetry data...");
     }
 }

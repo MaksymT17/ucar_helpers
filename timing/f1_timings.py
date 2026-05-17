@@ -19,23 +19,25 @@ for driver_number in session.drivers:
     race_laps = driver_laps[driver_laps['LapNumber'] >= 1]
 
     if not race_laps.empty:
-        # 1. Get raw telemetry and ensure it is strictly forward-moving
-        telemetry = race_laps.get_telemetry().sort_values(by='SessionTime')
-        telemetry = telemetry.drop_duplicates(subset=['SessionTime'], keep='first')
+        # 1. Get continuous telemetry for the race laps
+        # Using race_laps.get_telemetry() directly provides a joined stream
+        telemetry = race_laps.get_telemetry()
 
-        # 2. Manually merge LapNumber using standard Pandas logic (Version Agnostic)
-        # This maps the LapNumber from the laps data to the nearest timestamp in telemetry
-        lap_map = race_laps[['LapNumber', 'LapStartTime']].copy()
-        lap_map = lap_map.sort_values(by='LapStartTime')
+        # 2. Map LapNumber using SessionTime to ensure the lap changes exactly at the line
+        # We use standard pandas merge_asof to avoid version-specific FastF1 helper errors
+        lap_timing = race_laps[['LapNumber', 'LapStartTime']].copy()
+        lap_timing = lap_timing.sort_values(by='LapStartTime')
         
         telemetry = pd.merge_asof(
-            telemetry, 
-            lap_map, 
-            left_on='SessionTime', 
-            right_on='LapStartTime', 
+            telemetry.sort_values('SessionTime'),
+            lap_timing,
+            left_on='SessionTime',
+            right_on='LapStartTime',
             direction='backward'
         )
-        # Ensure the first few points have a lap number if LapStartTime starts slightly late
+        
+        # 3. CLEANUP: Ensure Time is strictly monotonic and remove spatial overlaps
+        telemetry = telemetry.drop_duplicates(subset=['SessionTime'], keep='first')
         telemetry['LapNumber'] = telemetry['LapNumber'].ffill().bfill().astype(int)
 
         # Normalize Time: Subtract the start time of the first race lap
