@@ -28,11 +28,14 @@ struct DriverSimState {
     QString abbreviation;
     std::vector<TelemetryEntry> telemetry;
     float distanceTraveled = 0.0f;
+    float lap1FinishDist = 0.0f; // Distance from grid to finish line
     float lastLapTime = 0.0f;
     float lapStartTime = 0.0f;
     int currentLap = 1;
     size_t lastIndex = 0;
     QColor color;
+    std::map<int, float> gateCrossingTimes; // GateIndex -> simTime
+    int nextGateIndex = 0;
 };
 
 class TrackSimulatorWidget : public QWidget {
@@ -64,6 +67,7 @@ private:
     float simTime = 0.0f;
     size_t maxRevealedIndex = 0;
     float leaderboardTimer = 0.0f;
+    std::vector<float> gateDistances; // Distance markers for virtual loops
     bool lapCompleted = false;
     float currentSpeed; 
     float maxSpeed; // Removed const to allow calculation

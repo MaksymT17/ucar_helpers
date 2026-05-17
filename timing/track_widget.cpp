@@ -83,6 +83,16 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
 
     if (rawData.empty()) return false;
 
+    // Find the distance at which this driver finishes Lap 1
+    float lap1FinishDist = 0.0f;
+    for (size_t i = 0; i < rawData.size() - 1; ++i) {
+        if (rawData[i].lap == 1 && rawData[i+1].lap == 2) {
+            lap1FinishDist = rawData[i].distance;
+            break;
+        }
+    }
+    if (lap1FinishDist == 0 && !rawData.empty()) lap1FinishDist = rawData.back().distance;
+
     DriverSimState newDriver;
     newDriver.abbreviation = abb;
     // Assign a color based on the number of drivers already loaded
@@ -118,6 +128,7 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
 
     // Start exactly at the beginning of the race telemetry (the Grid)
     newDriver.distanceTraveled = newDriver.telemetry.front().distance;
+    newDriver.lap1FinishDist = lap1FinishDist;
     newDriver.lastIndex = 0;
     newDriver.currentLap = !newDriver.telemetry.empty() ? newDriver.telemetry.front().lapNumber : 1;
     newDriver.lapStartTime = 0.0f;
@@ -142,6 +153,22 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
         }
     }
 
+    // Initialize Absolute Virtual Gates (referenced to finish line = 0)
+    if (gateDistances.empty()) {
+        gateDistances.clear();
+        // Create gates from -1km (before line) to 300km (race end)
+        for (float d = -1000.0f; d < 305000.0f; d += 250.0f) {
+            gateDistances.push_back(d);
+        }
+    }
+
+    // Align this specific driver to the correct starting gate
+    float startCorrected = newDriver.distanceTraveled - newDriver.lap1FinishDist;
+    newDriver.nextGateIndex = 0;
+    while (newDriver.nextGateIndex < (int)gateDistances.size() && gateDistances[newDriver.nextGateIndex] <= startCorrected) {
+        newDriver.nextGateIndex++;
+    }
+
     drivers.push_back(newDriver);
     isDataDriven = true;
     qDebug() << "Loaded" << newDriver.telemetry.size() << "telemetry entries for" << newDriver.abbreviation;
@@ -159,12 +186,14 @@ void TrackSimulatorWidget::setupTrackPath() {
 void TrackSimulatorWidget::resizeEvent(QResizeEvent *event) {
     if (event) QWidget::resizeEvent(event);
     
-    // Map the normalized path (0.0 - 1.0) directly to the widget's full size
-    // The track will now fill the available widget space, maintaining its aspect ratio
-    // as determined by the normalization in loadTelemetry.
+    // Maintain aspect ratio by finding the largest square that fits in the widget
+    int side = qMin(width(), height());
+    float xOffset = (width() - side) / 2.0f;
+    float yOffset = (height() - side) / 2.0f;
+
     QTransform scaler;
-    scaler.translate(0, 0); // Draw from top-left of the widget
-    scaler.scale(width(), height()); // Scale to the full width and height of the widget
+    scaler.translate(xOffset, yOffset);
+    scaler.scale(side, side);
     scaledPath = scaler.map(trackPath);
 }
 
@@ -188,20 +217,35 @@ void TrackSimulatorWidget::updateAnimation() {
         // Update Leaderboard Order every 5 seconds (or immediately if just started)
         if (leaderboardTimer >= 5.0f || (leaderboardTimer > 0.01f && leaderboardTimer < 0.04f)) {
             leaderboardTimer = 0.0f;
-            
+
+            // Sort by current total distance to find the leader
             std::vector<const DriverSimState*> sorted;
             for (const auto& d : drivers) sorted.push_back(&d);
             std::sort(sorted.begin(), sorted.end(), [](const DriverSimState* a, const DriverSimState* b) {
-                return a->distanceTraveled > b->distanceTraveled;
+                return (a->distanceTraveled - a->lap1FinishDist) > (b->distanceTraveled - b->lap1FinishDist);
             });
 
+            const DriverSimState* leader = sorted.empty() ? nullptr : sorted[0];
             QStringList entries;
+
             for (size_t i = 0; i < sorted.size(); ++i) {
-                QString timeStr = (sorted[i]->lastLapTime > 0) 
-                    ? QString::number(sorted[i]->lastLapTime, 'f', 2) + "s" 
-                    : "--";
-                entries << QString("%1. %2 (L%3) - %4")
-                    .arg(i + 1).arg(sorted[i]->abbreviation).arg(sorted[i]->currentLap).arg(timeStr);
+                QString gapStr = "LEADER";
+                if (i > 0 && leader) {
+                    // Calculate gap based on the last shared gate
+                    int lastGate = sorted[i]->nextGateIndex - 1;
+                    if (lastGate >= 0 && 
+                        leader->gateCrossingTimes.count(lastGate) && 
+                        sorted[i]->gateCrossingTimes.count(lastGate)) {
+                        
+                        float gap = sorted[i]->gateCrossingTimes.at(lastGate) - leader->gateCrossingTimes.at(lastGate);
+                        gapStr = QString("+%1s").arg(gap, 0, 'f', 3);
+                    } else {
+                        gapStr = "---";
+                    }
+                }
+                
+                entries << QString("%1. %2 (L%3) %4")
+                    .arg(i + 1).arg(sorted[i]->abbreviation).arg(sorted[i]->currentLap).arg(gapStr);
             }
             emit leaderboardUpdated(entries);
         }
@@ -218,6 +262,15 @@ void TrackSimulatorWidget::updateAnimation() {
             while (driver.lastIndex < driver.telemetry.size() - 1 &&
                    driver.telemetry[driver.lastIndex + 1].time <= simTime) {
                 driver.lastIndex++;
+            }
+
+            // Record Gate Crossing
+            float correctedDist = driver.distanceTraveled - driver.lap1FinishDist;
+            if (!gateDistances.empty() && driver.nextGateIndex < (int)gateDistances.size()) {
+                if (correctedDist >= gateDistances[driver.nextGateIndex]) {
+                    driver.gateCrossingTimes[driver.nextGateIndex] = simTime;
+                    driver.nextGateIndex++;
+                }
             }
 
             // Detect Lap Change
@@ -291,6 +344,15 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
     // The background image is no longer used. Fill the entire widget with black.
     painter.fillRect(rect(), Qt::black);
 
+    // Calculate square viewport to maintain aspect ratio
+    int side = qMin(width(), height());
+    float xOffset = (width() - side) / 2.0f;
+    float yOffset = (height() - side) / 2.0f;
+
+    auto mapPos = [&](QPointF norm) {
+        return QPointF(xOffset + norm.x() * side, yOffset + norm.y() * side);
+    };
+
     // 2. Draw Track Line (Reveal logic)
     if (!drivers.empty()) {
         const auto& refTelemetry = drivers[0].telemetry;
@@ -300,13 +362,10 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
         if (limit > 1) {
             painter.setPen(QPen(QColor(255, 255, 255, 80), 2));
             QPainterPath revealPath;
-            
-            QPointF startPoint = refTelemetry[0].normalizedPos;
-            revealPath.moveTo(startPoint.x() * width(), startPoint.y() * height());
+            revealPath.moveTo(mapPos(refTelemetry[0].normalizedPos));
 
             for (size_t i = 1; i < limit; ++i) {
-                QPointF p = refTelemetry[i].normalizedPos;
-                revealPath.lineTo(p.x() * width(), p.y() * height());
+                revealPath.lineTo(mapPos(refTelemetry[i].normalizedPos));
             }
             painter.drawPath(revealPath);
         }
@@ -334,14 +393,14 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
             interpPos = driver.telemetry[idx].normalizedPos;
         }
 
-        QPointF carPos(interpPos.x() * width(), interpPos.y() * height());
+        QPointF carPos = mapPos(interpPos);
         
         painter.setBrush(driver.color);
         painter.setPen(QPen(Qt::white, 1));
         painter.drawEllipse(carPos, 10, 10);
         
-        // Draw Simple Label: "VER (L5)"
-        QString label = QString("%1 (L%2)").arg(driver.abbreviation).arg(driver.currentLap);
+        // Draw Simple Label: Just the abbreviation to reduce redundancy
+        QString label = driver.abbreviation;
         painter.drawText(carPos + QPointF(12, 5), label);
     }
 
