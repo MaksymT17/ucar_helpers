@@ -1,5 +1,6 @@
 import fastf1
 import pandas as pd
+import fastf1.utils
 
 # Load the 2026 Australian Grand Prix Race session
 session = fastf1.get_session(2026, 'Australia', 'R')
@@ -18,13 +19,24 @@ for driver_number in session.drivers:
     race_laps = driver_laps[driver_laps['LapNumber'] >= 1]
 
     if not race_laps.empty:
-        # Get telemetry lap by lap to include LapNumber in the resulting data
-        all_telemetry = []
-        for _, lap in race_laps.iterrows():
-            t = lap.get_telemetry()
-            t['LapNumber'] = lap['LapNumber']
-            all_telemetry.append(t)
-        telemetry = pd.concat(all_telemetry)
+        # 1. Get raw telemetry and ensure it is strictly forward-moving
+        telemetry = race_laps.get_telemetry().sort_values(by='SessionTime')
+        telemetry = telemetry.drop_duplicates(subset=['SessionTime'], keep='first')
+
+        # 2. Manually merge LapNumber using standard Pandas logic (Version Agnostic)
+        # This maps the LapNumber from the laps data to the nearest timestamp in telemetry
+        lap_map = race_laps[['LapNumber', 'LapStartTime']].copy()
+        lap_map = lap_map.sort_values(by='LapStartTime')
+        
+        telemetry = pd.merge_asof(
+            telemetry, 
+            lap_map, 
+            left_on='SessionTime', 
+            right_on='LapStartTime', 
+            direction='backward'
+        )
+        # Ensure the first few points have a lap number if LapStartTime starts slightly late
+        telemetry['LapNumber'] = telemetry['LapNumber'].ffill().bfill().astype(int)
 
         # Normalize Time: Subtract the start time of the first race lap
         start_time = telemetry['Time'].iloc[0]

@@ -204,7 +204,6 @@ void TrackSimulatorWidget::updateAnimation() {
                 driver.lastLapTime = driver.telemetry[driver.lastIndex].time - driver.lapStartTime;
                 driver.lapStartTime = driver.telemetry[driver.lastIndex].time;
                 driver.currentLap = newLap;
-                qDebug() << "Driver" << driver.abbreviation << "completed Lap" << newLap - 1 << "in" << driver.lastLapTime << "s";
             }
 
             // Track the furthest point reached across all drivers
@@ -216,7 +215,8 @@ void TrackSimulatorWidget::updateAnimation() {
             driver.distanceTraveled = driver.telemetry[driver.lastIndex].distance;
 
             // Keep track line visible once the lead driver finishes
-            if (&driver == &drivers[0] && driver.lastIndex >= driver.telemetry.size() - 1) {
+            if (&driver == &drivers[0] && driver.lastIndex >= (int)driver.telemetry.size() - 1 && !lapCompleted) {
+                qDebug() << "updateAnimation lapCompleted";
                 lapCompleted = true;
             }
         }
