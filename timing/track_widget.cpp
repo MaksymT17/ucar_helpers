@@ -83,16 +83,6 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
 
     if (rawData.empty()) return false;
 
-    // Find the distance at which this driver finishes Lap 1
-    float lap1FinishDist = 0.0f;
-    for (size_t i = 0; i < rawData.size() - 1; ++i) {
-        if (rawData[i].lap == 1 && rawData[i+1].lap == 2) {
-            lap1FinishDist = rawData[i].distance;
-            break;
-        }
-    }
-    if (lap1FinishDist == 0 && !rawData.empty()) lap1FinishDist = rawData.back().distance;
-
     DriverSimState newDriver;
     newDriver.abbreviation = abb;
     // Assign a color based on the number of drivers already loaded
@@ -127,8 +117,8 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
     }
 
     // Start exactly at the beginning of the race telemetry (the Grid)
-    newDriver.distanceTraveled = newDriver.telemetry.front().distance;
-    newDriver.lap1FinishDist = lap1FinishDist;
+    newDriver.distanceTraveled = newDriver.telemetry.front().distance; 
+    newDriver.lap1FinishDist = 0.0f; // Now 0.0 because Python handles normalization
     newDriver.lastIndex = 0;
     newDriver.currentLap = !newDriver.telemetry.empty() ? newDriver.telemetry.front().lapNumber : 1;
     newDriver.lapStartTime = 0.0f;
@@ -374,6 +364,12 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
     // 3. Draw All Drivers
     for (const auto& driver : drivers) {
         if (driver.telemetry.empty()) continue;
+        
+        // SKIP POSITIONING: If driver crashed or finished, their telemetry stops.
+        // If simTime is past their final data point, don't draw them.
+        if (simTime < driver.telemetry.front().time || simTime > driver.telemetry.back().time) {
+            continue;
+        }
 
         QPointF interpPos;
         size_t idx = driver.lastIndex;

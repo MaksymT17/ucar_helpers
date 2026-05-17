@@ -40,6 +40,13 @@ for driver_number in session.drivers:
         telemetry = telemetry.drop_duplicates(subset=['SessionTime'], keep='first')
         telemetry['LapNumber'] = telemetry['LapNumber'].ffill().bfill().astype(int)
 
+        # NORMALIZATION: Shift Distance so 0.0 is the Finish Line
+        # Find the distance value exactly where Lap 2 starts
+        lap2_telemetry = telemetry[telemetry['LapNumber'] == 2]
+        if not lap2_telemetry.empty:
+            finish_line_offset = lap2_telemetry['Distance'].min()
+            telemetry['Distance'] = telemetry['Distance'] - finish_line_offset
+
         # Normalize Time: Subtract the start time of the first race lap
         start_time = telemetry['Time'].iloc[0]
         telemetry['TimeSeconds'] = (telemetry['Time'] - start_time).dt.total_seconds()
