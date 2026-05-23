@@ -2,7 +2,7 @@ import fastf1
 import pandas as pd
 import fastf1.utils
 
-# Load the 2026 Australian Grand Prix Race session
+# Load the Australian Grand Prix Race session
 session = fastf1.get_session(2026, 'Australia', 'R')
 session.load()
 

@@ -11,6 +11,7 @@
 struct TelemetryEntry {
     float time;
     QPointF normalizedPos; 
+    QPointF originalPos;
     float speed;
     float distance;
     float throttle;
@@ -21,6 +22,12 @@ struct TelemetryEntry {
 struct TrackConfig {
     QString name;
     QString imagePath;
+    float rotation = 0.0f;       // Degrees to rotate telemetry
+    bool flipX = false;          // Mirror horizontally
+    bool flipY = false;          // Mirror vertically
+    float scale = 0.9f;          // Zoom factor to match image margins
+    float offsetX = 0.0f;        // Normalized X offset [-1, 1]
+    float offsetY = 0.0f;        // Normalized Y offset [-1, 1]
     std::vector<QPointF> points; // Normalized 0.0 to 1.0
 };
 
@@ -61,6 +68,7 @@ private:
     void setupTrackPath();
     
     QPixmap background;
+    TrackConfig currentConfig;
     QPainterPath trackPath;
     QPainterPath scaledPath; // Path scaled to current widget size (full widget)
     

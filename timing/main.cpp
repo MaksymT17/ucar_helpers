@@ -35,15 +35,35 @@ int main(int argc, char *argv[]) {
         leaderboardList->addItems(entries);
     });
 
+    // Load the reference track map image
+    TrackConfig config;
+    config.name = "Australia";
+    config.imagePath = "australia.png";
+    
+    // ALIGNMENT SYSTEM
+    // Use these parameters to perfectly align raw FastF1 GPS data 
+    // to ANY official track image you download. 
+    // For Australia: FastF1 Y is Latitude (North is +). Screen Y is Down (+). Flip aligns them.
+    // You can fine-tune these numbers until the track trace perfectly overlays your map!
+    config.rotation = -45.0f;  // Try 90, 180, 270 degrees etc. based on the image orientation
+    config.flipX = false;    
+    config.flipY = true;     
+    config.scale = 0.79f;    // 0.85 gives some margin to fit within the image
+    config.offsetX = -0.042f;   // Nudge left/right (e.g., -0.05)
+    config.offsetY = 0.03f;   // Nudge up/down (e.g., 0.1)
+    
+    viewer->loadTrack(config);
+
     // Scan for all Australia telemetry files (supporting multiple years)
-    QDir dir(".");
+    QDir dir("data/australia");
     QStringList filters;
     filters << "australia_*_telemetry.csv";
     QStringList files = dir.entryList(filters, QDir::Files);
 
     for (const QString& filename : files) {
-        qDebug() << "Loading driver data:" << filename;
-        viewer->loadTelemetry(filename);
+        QString fullPath = dir.filePath(filename);
+        qDebug() << "Loading driver data:" << fullPath;
+        viewer->loadTelemetry(fullPath);
     }
 
     mainWin.resize(1024, 768);

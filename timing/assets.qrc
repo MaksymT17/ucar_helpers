@@ -1,6 +1,7 @@
 <RCC>
     <qresource prefix="/">
         <file>italy.png</file>
-        <file>australia.png</file>
+        <file>data/australia/australia.png</file>
+        <file>data/china/china.png</file>
     </qresource>
 </RCC>

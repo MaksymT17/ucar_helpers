@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QStringList>
 #include <QFileInfo>
+#include <cmath>
 
 TrackSimulatorWidget::TrackSimulatorWidget(QWidget *parent) 
     : QWidget(parent), currentSpeed(0.0001f) {
@@ -24,9 +25,8 @@ TrackSimulatorWidget::TrackSimulatorWidget(QWidget *parent)
 }
 
 void TrackSimulatorWidget::loadTrack(const TrackConfig& config) {
-    // The background image is no longer loaded or used for drawing the track.
-    // Note: trackPath is now built dynamically in loadTelemetry from actual data
-    // but we reset it here just in case.
+    currentConfig = config;
+    background.load(config.imagePath);
     trackPath = QPainterPath(); 
 
     resizeEvent(nullptr);
@@ -52,7 +52,6 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
     
     struct RawEntry { float time, x, y, speed, distance, throttle, brake; int lap; };
     std::vector<RawEntry> rawData;
-    float minX = 1e10, maxX = -1e10, minY = 1e10, maxY = -1e10;
 
     while (!in.atEnd()) {
         QString line = in.readLine();
@@ -76,8 +75,6 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
             continue;
         }
 
-        minX = std::min(minX, entry.x); maxX = std::max(maxX, entry.x);
-        minY = std::min(minY, entry.y); maxY = std::max(maxY, entry.y);
         rawData.push_back(entry);
     }
 
@@ -88,26 +85,10 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
     // Assign a color based on the number of drivers already loaded
     newDriver.color = QColor::fromHsv((drivers.size() * 40) % 360, 200, 255);
     
-    float rangeX = maxX - minX;
-    float rangeY = maxY - minY;
-    float maxRange = std::max(rangeX, rangeY);
-    float centerX = (minX + maxX) / 2.0f;
-    float centerY = (minY + maxY) / 2.0f;
-
     for (size_t i = 0; i < rawData.size(); ++i) {
-        // 1. Normalize relative to center and preserve aspect ratio
-        float nx = (rawData[i].x - centerX) / maxRange;
-        float ny = (rawData[i].y - centerY) / maxRange;
-
-        // 2. ROTATION & ALIGNMENT: To fix vertical lines and show telemetry
-        // as a horizontal track, we map telemetry Y to screen X and telemetry X to screen Y.
-        // We also invert the Y-axis to match screen coordinates (Y increases downwards).
-        float finalX = 0.5f + ny * 0.9f;  // Telemetry Y (vertical component) maps to screen X (horizontal)
-        float finalY = 0.5f - nx * 0.9f;  // Telemetry X (horizontal component) maps to screen Y (vertical, inverted)
-
         TelemetryEntry t;
         t.time = rawData[i].time;
-        t.normalizedPos = QPointF(finalX, finalY);
+        t.originalPos = QPointF(rawData[i].x, rawData[i].y);
         t.speed = rawData[i].speed;
         t.distance = rawData[i].distance;
         t.throttle = rawData[i].throttle;
@@ -127,20 +108,9 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
     maxRevealedIndex = 0;
     lapCompleted = false;
 
-    // Initialize global simTime to 0.0 (the normalized start of Lap 1)
+    // Initialize global simTime to the first valid timestamp to avoid dead time
     if (drivers.empty() && !newDriver.telemetry.empty()) {
-        simTime = 0.0f;
-    }
-
-    // 3. GENERATE TRACK PATH FROM FIRST DRIVER
-    if (drivers.empty()) {
-        trackPath = QPainterPath();
-        if (newDriver.telemetry.size() > 1) {
-            trackPath.moveTo(newDriver.telemetry[0].normalizedPos);
-            for (size_t i = 1; i < newDriver.telemetry.size(); ++i) {
-                trackPath.lineTo(newDriver.telemetry[i].normalizedPos);
-            }
-        }
+        simTime = newDriver.telemetry.front().time;
     }
 
     // Initialize Absolute Virtual Gates (referenced to finish line = 0)
@@ -161,6 +131,54 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
 
     drivers.push_back(newDriver);
     isDataDriven = true;
+
+    // 3. RECOMPUTE GLOBAL BOUNDING BOX AND NORMALIZED POSITIONS
+    // We now purely center the coordinates and scale them to [-0.5, 0.5].
+    // All alignment (rotation/flip/scale) is offloaded to the TrackConfig
+    // allowing you to align ANY circuit image without touching the core math.
+    float gMinX = 1e10, gMaxX = -1e10, gMinY = 1e10, gMaxY = -1e10;
+
+    for (const auto& d : drivers) {
+        for (const auto& t : d.telemetry) {
+            float rawX = t.originalPos.x();
+            float rawY = t.originalPos.y();
+            
+            gMinX = std::min(gMinX, rawX);
+            gMaxX = std::max(gMaxX, rawX);
+            gMinY = std::min(gMinY, rawY);
+            gMaxY = std::max(gMaxY, rawY);
+        }
+    }
+
+    float rangeX = gMaxX - gMinX;
+    float rangeY = gMaxY - gMinY;
+    float maxRange = std::max(rangeX, rangeY);
+    float centerX = (gMinX + gMaxX) / 2.0f;
+    float centerY = (gMinY + gMaxY) / 2.0f;
+
+    for (auto& d : drivers) {
+        for (auto& t : d.telemetry) {
+            float rawX = t.originalPos.x();
+            float rawY = t.originalPos.y();
+            
+            float nx = (rawX - centerX) / maxRange;
+            float ny = (rawY - centerY) / maxRange;
+            
+            t.normalizedPos = QPointF(nx, ny);
+        }
+    }
+
+    // 4. GENERATE TRACK PATH FROM FIRST DRIVER TO REFLECT NEW GLOBAL NORMALIZATION
+    if (!drivers.empty()) {
+        trackPath = QPainterPath();
+        if (drivers[0].telemetry.size() > 1) {
+            trackPath.moveTo(drivers[0].telemetry[0].normalizedPos);
+            for (size_t i = 1; i < drivers[0].telemetry.size(); ++i) {
+                trackPath.lineTo(drivers[0].telemetry[i].normalizedPos);
+            }
+        }
+    }
+
     qDebug() << "Loaded" << newDriver.telemetry.size() << "telemetry entries for" << newDriver.abbreviation;
     if (!newDriver.telemetry.empty()) qDebug() << "First speed:" << newDriver.telemetry.front().speed << "Last distance:" << newDriver.telemetry.back().distance;
     
@@ -331,7 +349,6 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
     };
 
     // 1. Draw Background
-    // The background image is no longer used. Fill the entire widget with black.
     painter.fillRect(rect(), Qt::black);
 
     // Calculate square viewport to maintain aspect ratio
@@ -339,8 +356,32 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
     float xOffset = (width() - side) / 2.0f;
     float yOffset = (height() - side) / 2.0f;
 
+    if (!background.isNull()) {
+        painter.save();
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        
+        // Translate to the center of the viewport
+        painter.translate(xOffset + side / 2.0f, yOffset + side / 2.0f);
+        
+        // Draw image perfectly centered, filling the track bounds area.
+        float imgScale = (float)side / qMax(background.width(), background.height());
+        painter.scale(imgScale, imgScale);
+        
+        // Draw image centered
+        painter.drawPixmap(-background.width() / 2, -background.height() / 2, background);
+        painter.restore();
+    }
+
+    // Apply the custom configuration transformations to the telemetry data
+    QTransform trackTransform;
+    trackTransform.translate(xOffset + side / 2.0f, yOffset + side / 2.0f); // Move to center
+    trackTransform.translate(currentConfig.offsetX * side, currentConfig.offsetY * side);
+    trackTransform.scale(side * currentConfig.scale, side * currentConfig.scale);
+    trackTransform.rotate(currentConfig.rotation);
+    trackTransform.scale(currentConfig.flipX ? -1.0 : 1.0, currentConfig.flipY ? -1.0 : 1.0);
+
     auto mapPos = [&](QPointF norm) {
-        return QPointF(xOffset + norm.x() * side, yOffset + norm.y() * side);
+        return trackTransform.map(norm);
     };
 
     // 2. Draw Track Line (Reveal logic)
