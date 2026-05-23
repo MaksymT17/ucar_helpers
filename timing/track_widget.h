@@ -52,6 +52,7 @@ public:
     explicit TrackSimulatorWidget(QWidget *parent = nullptr);
     void loadTrack(const TrackConfig& config);
     bool loadTelemetry(const QString& csvPath);
+    void clearTelemetry();
 
 signals:
     void leaderboardUpdated(const QStringList &entries);

@@ -3,5 +3,7 @@
         <file>italy.png</file>
         <file>data/australia/australia.png</file>
         <file>data/china/china.png</file>
+        <file>data/japan/japan.png</file>
+        <file>data/miami/miami.png</file>
     </qresource>
 </RCC>

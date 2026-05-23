@@ -5,6 +5,7 @@
 #include <QHBoxLayout>
 #include <QListWidget>
 #include <QLabel>
+#include <QComboBox>
 #include "track_widget.h"
 
 int main(int argc, char *argv[]) {
@@ -24,6 +25,15 @@ int main(int argc, char *argv[]) {
     
     sidebar->addWidget(header);
     sidebar->addWidget(leaderboardList);
+
+    sidebar->addWidget(new QLabel("Select Track:"));
+    QComboBox *trackSelector = new QComboBox();
+    trackSelector->addItem("Australia");
+    trackSelector->addItem("China");
+    trackSelector->addItem("Japan");
+    trackSelector->addItem("Miami");
+    sidebar->addWidget(trackSelector);
+
     layout->addLayout(sidebar);
 
     TrackSimulatorWidget *viewer = new TrackSimulatorWidget();
@@ -35,36 +45,73 @@ int main(int argc, char *argv[]) {
         leaderboardList->addItems(entries);
     });
 
-    // Load the reference track map image
-    TrackConfig config;
-    config.name = "Australia";
-    config.imagePath = "australia.png";
-    
-    // ALIGNMENT SYSTEM
-    // Use these parameters to perfectly align raw FastF1 GPS data 
-    // to ANY official track image you download. 
-    // For Australia: FastF1 Y is Latitude (North is +). Screen Y is Down (+). Flip aligns them.
-    // You can fine-tune these numbers until the track trace perfectly overlays your map!
-    config.rotation = -45.0f;  // Try 90, 180, 270 degrees etc. based on the image orientation
-    config.flipX = false;    
-    config.flipY = true;     
-    config.scale = 0.79f;    // 0.85 gives some margin to fit within the image
-    config.offsetX = -0.042f;   // Nudge left/right (e.g., -0.05)
-    config.offsetY = 0.03f;   // Nudge up/down (e.g., 0.1)
-    
-    viewer->loadTrack(config);
+    auto loadTrackData = [&](const QString& gpName) {
+        viewer->clearTelemetry();
 
-    // Scan for all Australia telemetry files (supporting multiple years)
-    QDir dir("data/australia");
-    QStringList filters;
-    filters << "australia_*_telemetry.csv";
-    QStringList files = dir.entryList(filters, QDir::Files);
+        // Resolve path dynamically whether running from source root or build folder
+        QString basePath = QString("data/%1").arg(gpName);
+        if (!QDir(basePath).exists()) {
+            basePath = QString("../data/%1").arg(gpName);
+        }
 
-    for (const QString& filename : files) {
-        QString fullPath = dir.filePath(filename);
-        qDebug() << "Loading driver data:" << fullPath;
-        viewer->loadTelemetry(fullPath);
-    }
+        TrackConfig config;
+        config.name = gpName.toUpper();
+        config.imagePath = basePath + QString("/%1.png").arg(gpName);
+        
+        if (gpName == "australia") {
+            config.rotation = -45.0f;
+            config.flipX = false;    
+            config.flipY = true;     
+            config.scale = 0.79f;
+            config.offsetX = -0.042f;
+            config.offsetY = 0.03f;
+        } else if (gpName == "china") {
+            config.rotation = 122.0f;
+            config.flipX = false;
+            config.flipY = true;
+            config.scale = 0.99f;
+            config.offsetX = 0.0f;
+            config.offsetY = -0.13f;
+        } else if (gpName == "japan") {
+            // NOTE: Default values, will likely need tuning!
+            config.rotation = 1.0f;
+            config.flipX = false;
+            config.flipY = true;
+            config.scale = 0.84f;
+            config.offsetX = -0.003f;
+            config.offsetY = 0.0f;
+        } else if (gpName == "miami") {
+            // NOTE: Default values, will likely need tuning!
+            config.rotation = -14.0f;
+            config.flipX = false;
+            config.flipY = true;
+            config.scale = 1.215f;
+            config.offsetX = -0.05f;
+            config.offsetY = 0.37f;
+        }
+        
+        viewer->loadTrack(config);
+
+        QDir dir(basePath);
+        QStringList filters;
+        filters << "*_telemetry.csv";
+        QStringList files = dir.entryList(filters, QDir::Files);
+
+        for (const QString& filename : files) {
+            QString fullPath = dir.filePath(filename);
+            qDebug() << "Loading driver data:" << fullPath;
+            viewer->loadTelemetry(fullPath);
+        }
+        
+        mainWin.setWindowTitle(QString("UCAR %1 Track Simulator").arg(config.name));
+    };
+
+    QObject::connect(trackSelector, &QComboBox::currentTextChanged, [&](const QString &text) {
+        loadTrackData(text.toLower());
+    });
+
+    // Load initial track
+    loadTrackData("australia");
 
     mainWin.resize(1024, 768);
     mainWin.show();

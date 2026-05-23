@@ -187,6 +187,18 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
     return true;
 }
 
+void TrackSimulatorWidget::clearTelemetry() {
+    drivers.clear();
+    gateDistances.clear();
+    simTime = 0.0f;
+    maxRevealedIndex = 0;
+    lapCompleted = false;
+    isDataDriven = false;
+    leaderboardTimer = 0.0f;
+    emit leaderboardUpdated(QStringList());
+    update();
+}
+
 void TrackSimulatorWidget::setupTrackPath() {
     // Base path initialization is now handled in loadTrack
 }
