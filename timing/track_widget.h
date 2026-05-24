@@ -54,6 +54,7 @@ struct DriverSimState {
     bool isPoleLap = false;
     float vgStartTime = -1.0f; // Time of crossing the first VG (VG[0])
     QColor color;
+    QColor borderColor;
     std::map<int, float> gateCrossingTimes; // GateIndex -> simTime
     int nextGateIndex = 0;
 };
@@ -68,7 +69,7 @@ public:
     void clearTelemetry();
 
 signals:
-    void leaderboardUpdated(const QStringList &entries);
+    void leaderboardUpdated(const QStringList &entries, int leaderLap);
 
 public slots:
     void generateVirtualGates();

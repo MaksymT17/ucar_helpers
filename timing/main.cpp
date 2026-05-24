@@ -10,6 +10,7 @@
 #include "track_widget.h"
 
 int main(int argc, char *argv[]) {
+    // Custom data types for leaderboard coloring have been removed.
     QApplication app(argc, argv);
 
     QWidget mainWin;
@@ -18,7 +19,7 @@ int main(int argc, char *argv[]) {
 
     // Sidebar for Leaderboard
     QVBoxLayout *sidebar = new QVBoxLayout();
-    QLabel *header = new QLabel("LEADERBOARD (5s Update)");
+    QLabel *header = new QLabel("Leaderboard");
     header->setStyleSheet("font-weight: bold; color: yellow; background: #222; padding: 5px;");
     QListWidget *leaderboardList = new QListWidget();
     leaderboardList->setFixedWidth(200);
@@ -55,9 +56,14 @@ int main(int argc, char *argv[]) {
     QObject::connect(startButton, &QPushButton::clicked, viewer, &TrackSimulatorWidget::startRace);
 
     // Connect the 5-second signal to update the UI list
-    QObject::connect(viewer, &TrackSimulatorWidget::leaderboardUpdated, [leaderboardList](const QStringList &entries) {
+    QObject::connect(viewer, &TrackSimulatorWidget::leaderboardUpdated, [leaderboardList, header](const QStringList &entries, int leaderLap) {
         leaderboardList->clear();
         leaderboardList->addItems(entries);
+        if (leaderLap > 0) {
+            header->setText(QString("Leaderboard Lap %1").arg(leaderLap));
+        } else {
+            header->setText("Leaderboard");
+        }
     });
 
     auto loadTrackData = [&](const QString& gpName) {

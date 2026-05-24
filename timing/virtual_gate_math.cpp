@@ -85,3 +85,35 @@ std::vector<VirtualGate> generateVirtualGatesFromTelemetry(
     }
     return gates;
 }
+
+/**
+ * @brief Calculates the intersection of two line segments.
+ * @param p1 Start point of the first segment (driver's previous position).
+ * @param q1 End point of the first segment (driver's current position).
+ * @param p2 Start point of the second segment (gate's start).
+ * @param q2 End point of the second segment (gate's end).
+ * @return The interpolation factor 't' (from 0.0 to 1.0) along the first segment
+ *         where the intersection occurs. Returns a value outside this range (e.g., -1.0)
+ *         if the segments do not intersect.
+ */
+float calculateIntersectionFactor(QPointF p1, QPointF q1, QPointF p2, QPointF q2) {
+    QPointF dp = q1 - p1; // Driver's movement vector
+    QPointF dg = q2 - p2; // Gate's vector
+
+    float denominator = dp.x() * dg.y() - dp.y() * dg.x();
+
+    // If denominator is near zero, lines are parallel.
+    if (std::abs(denominator) < 1e-7) {
+        return -1.0f;
+    }
+
+    float t = ((p2.x() - p1.x()) * dg.y() - (p2.y() - p1.y()) * dg.x()) / denominator;
+    float u = -((p1.x() - p2.x()) * dp.y() - (p1.y() - p2.y()) * dp.x()) / denominator;
+
+    // If t and u are between 0 and 1, the segments intersect.
+    if (t >= 0.0f && t <= 1.0f && u >= 0.0f && u <= 1.0f) {
+        return t;
+    }
+
+    return -1.0f; // No intersection within the segments.
+}

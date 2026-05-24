@@ -7,6 +7,37 @@
 #include <QStringList>
 #include <QFileInfo>
 #include <cmath>
+#include <map>
+
+// --- Projected 2026 Team & Driver Mappings ---
+// NOTE: This is a speculative mapping for the 2026 season based on contracts
+// confirmed as of mid-2024 and strong industry rumors. This data will likely
+// need to be updated as the official driver market solidifies.
+static const std::map<QString, QString> driverToTeam = {
+    {"VER", "RBR"}, {"PER", "RBR"},       // Red Bull Racing (Assumption)
+    {"HAM", "FER"}, {"LEC", "FER"},       // Hamilton's move to Ferrari is confirmed
+    {"RUS", "MER"},                       // Mercedes
+    {"NOR", "MCL"}, {"PIA", "MCL"},       // McLaren lineup is stable
+    {"ALO", "AST"}, {"STR", "AST"},       // Aston Martin lineup is stable
+    {"HUL", "AUD"}, {"SAI", "AUD"},       // Audi entry with Hülkenberg confirmed, Sainz is a strong rumor
+    {"GAS", "ALP"}, {"OCO", "ALP"},       // Alpine (Assumption)
+    {"ALB", "WIL"},                       // Williams
+    {"TSU", "VCB"}, {"RIC", "VCB"},       // Visa Cash App RB (Assumption)
+    {"BEA", "HAA"}, {"MAG", "HAA"}        // Haas (Bearman is speculation)
+};
+
+static const std::map<QString, QColor> teamColors = {
+    {"RBR", QColor("#060029")},       // Red Bull Racing (Dark Blue)
+    {"FER", QColor("#DC0000")},       // Ferrari (Red)
+    {"MER", QColor("#00D2BE")},       // Mercedes (Teal)
+    {"MCL", QColor("#FF8700")},       // McLaren (Papaya Orange)
+    {"AST", QColor("#006F62")},       // Aston Martin (Green)
+    {"AUD", QColor("#D3D3D3")},       // Audi (Speculative Light Grey/Silver, replacing Sauber)
+    {"ALP", QColor("#0090FF")},       // Alpine (Blue)
+    {"VCB", QColor("#6495ED")},       // Visa Cash App RB (Cornflower Blue)
+    {"WIL", QColor("#005AFF")},       // Williams (Blue)
+    {"HAA", QColor("#FFFFFF")}        // Haas (White)
+};
 
 // Forward declaration for the function in virtual_gate_math.cpp
 std::vector<VirtualGate> generateVirtualGatesFromTelemetry(
@@ -14,6 +45,8 @@ std::vector<VirtualGate> generateVirtualGatesFromTelemetry(
     float gateInterval,
     float normalizedGateWidth
 );
+
+float calculateIntersectionFactor(QPointF p1, QPointF q1, QPointF p2, QPointF q2);
 
 TrackSimulatorWidget::TrackSimulatorWidget(QWidget *parent) 
     : QWidget(parent), currentSpeed(0.0001f) {
@@ -89,8 +122,32 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
     DriverSimState newDriver;
     newDriver.abbreviation = abb;
     newDriver.isPoleLap = fileName.contains("_POLE_", Qt::CaseInsensitive);
-    // Assign a color based on the number of drivers already loaded
-    newDriver.color = QColor::fromHsv((drivers.size() * 40) % 360, 200, 255);
+
+    // --- NEW COLOR LOGIC ---
+    // 1. Determine team and assign primary color
+    QString team = "UNKNOWN";
+    if (driverToTeam.count(abb)) {
+        team = driverToTeam.at(abb);
+    }
+
+    if (teamColors.count(team)) {
+        newDriver.color = teamColors.at(team);
+    } else {
+        // Fallback for unknown teams using the old HSV-based method
+        newDriver.color = QColor::fromHsv((drivers.size() * 40) % 360, 200, 255);
+    }
+
+    // 2. Assign border color to distinguish teammates (yellow for first, red for second)
+    int teammatesFound = 0;
+    if (team != "UNKNOWN") {
+        for (const auto& d : drivers) {
+            if (driverToTeam.count(d.abbreviation) && driverToTeam.at(d.abbreviation) == team) {
+                teammatesFound++;
+            }
+        }
+    }
+    newDriver.borderColor = (teammatesFound == 0) ? Qt::yellow : Qt::red;
+    // --- END NEW COLOR LOGIC ---
     
     for (size_t i = 0; i < rawData.size(); ++i) {
         TelemetryEntry t;
@@ -187,13 +244,44 @@ void TrackSimulatorWidget::clearTelemetry() {
     leaderboardTimer = 0.0f;
     // The old gate distances are no longer used, but clearing doesn't hurt.
     gateDistances.clear();
-    emit leaderboardUpdated(QStringList());
+    emit leaderboardUpdated(QStringList(), 0);
     update();
 }
 
 void TrackSimulatorWidget::startRace() {
     qDebug() << "Race start triggered.";
     if (!animationTimer->isActive() && !drivers.empty() && !virtualGates.empty()) {
+        // --- NEW LOGIC: Synchronize drivers to their starting gates ---
+        // This runs only once when the race is first started (simTime is near zero).
+        // It ensures that each driver's first target gate is the one immediately
+        // in front of their grid position, solving the leaderboard shuffle at the start.
+        if (simTime < 0.01f) {
+            qDebug() << "Synchronizing driver start gates for new race...";
+            for (auto& driver : drivers) {
+                if (driver.telemetry.empty()) continue;
+
+                // Reset individual driver state for a clean start
+                driver.nextGateIndex = 0;
+                driver.gateCrossingTimes.clear();
+                driver.vgStartTime = -1.0f;
+                driver.previousInterpPos = driver.telemetry.front().normalizedPos;
+
+                QPointF startPos = driver.telemetry.front().normalizedPos;
+                int initialGateIndex = 0;
+
+                for (const auto& gate : virtualGates) {
+                    QPointF vecToDriver = startPos - gate.center;
+                    if (QPointF::dotProduct(vecToDriver, gate.normal) > 0) {
+                        initialGateIndex = gate.id + 1;
+                    } else {
+                        break;
+                    }
+                }
+                driver.nextGateIndex = initialGateIndex;
+                qDebug() << "  - " << driver.abbreviation << " starts, next target is VG" << driver.nextGateIndex;
+            }
+        }
+
         qDebug() << "Starting animation timer.";
         animationTimer->start(16); // ~60 FPS
     } else if (virtualGates.empty()) {
@@ -253,8 +341,8 @@ void TrackSimulatorWidget::generateVirtualGates() {
 
     virtualGates.clear();
     virtualGatesPath = QPainterPath();
-    float gateInterval = 200.0f; // As per requirements
-    float normalizedGateWidth = 0.02f; // Visual width for the gate lines
+    constexpr float gateInterval = 100.0f; // As per requirements
+    float normalizedGateWidth = 0.02f; // Visual width for the gate lines, widened for robustness
     
     virtualGates = generateVirtualGatesFromTelemetry(*telemetryForGeneration, gateInterval, normalizedGateWidth);
 
@@ -335,6 +423,7 @@ void TrackSimulatorWidget::updateAnimation() {
             });
 
             const DriverSimState* leader = sorted.empty() ? nullptr : sorted.front();
+            int leaderLap = leader ? leader->currentLap : 0;
             QStringList entries;
 
             for (size_t i = 0; i < sorted.size(); ++i) {
@@ -357,7 +446,7 @@ void TrackSimulatorWidget::updateAnimation() {
                 entries << QString("%1. %2 (%3) %4")
                     .arg(i + 1).arg(sorted[i]->abbreviation).arg(vgLabel).arg(gapStr);
             }
-            emit leaderboardUpdated(entries);
+            emit leaderboardUpdated(entries, leaderLap);
         }
 
         for (auto& driver : drivers) {
@@ -395,35 +484,33 @@ void TrackSimulatorWidget::updateAnimation() {
                 int currentGateInLap = driver.nextGateIndex % virtualGates.size();
                 const auto& gate = virtualGates[currentGateInLap];
                 
-                float d_old = QPointF::dotProduct(driver.previousInterpPos - gate.center, gate.normal);
-                float d_new = QPointF::dotProduct(interpPos - gate.center, gate.normal);
+                // Use a robust segment-segment intersection test.
+                float t = calculateIntersectionFactor(driver.previousInterpPos, interpPos, gate.p1, gate.p2);
 
-                // A crossing occurs when the car moves from the "negative" side of the gate normal to the "positive" side.
-                // d_old should be <= 0 and d_new should be > 0.
-                if (d_old <= 0 && d_new > 0) {
-                    float crossingTime;
-                    float total_dist = d_old - d_new;
-                    if (total_dist > 1e-6) {
-                        float factor = d_old / total_dist;
-                        crossingTime = previousSimTime + (simTime - previousSimTime) * factor;
-                    } else {
-                        crossingTime = simTime; // Fallback
-                    }
+                // A valid intersection occurs if t is between 0 and 1.
+                if (t >= 0.0f && t <= 1.0f) {
+                    // Also check that the crossing is in the forward direction.
+                        QPointF movementVec = interpPos - driver.previousInterpPos;
+                        if (QPointF::dotProduct(movementVec, gate.normal) > 0) {
+                        // Precise crossing time using the interpolation factor 't'.
+                        float crossingTime = previousSimTime + t * (simTime - previousSimTime);
 
-                    // If this is the first gate crossing of the race, set the start time.
-                    if (driver.nextGateIndex == 0 && driver.vgStartTime < 0.0f) {
-                        driver.vgStartTime = crossingTime;
-                    }
+                            // If this is the first gate crossing for this driver in the race, set their race start time.
+                            if (driver.vgStartTime < 0.0f) {
+                            driver.vgStartTime = crossingTime;
+                        }
 
-                    // Record the time relative to the start time.
-                    if (driver.vgStartTime >= 0.0f) {
-                        driver.gateCrossingTimes[driver.nextGateIndex] = crossingTime - driver.vgStartTime;
+                            // Record the time for this specific gate, relative to their personal race start.
+                        if (driver.vgStartTime >= 0.0f) {
+                            driver.gateCrossingTimes[driver.nextGateIndex] = crossingTime - driver.vgStartTime;
+                        }
+                        
+                        driver.nextGateIndex++; // Increment total gates passed
+                        continue; // Check if we crossed another gate in the same frame
                     }
-                    
-                    driver.nextGateIndex++; // Increment total gates passed
-                } else {
-                    break; // No crossing for this gate, check next frame
                 }
+                // If no intersection or wrong direction, stop checking for this driver this frame.
+                break;
             }
             driver.previousInterpPos = interpPos;
 
@@ -525,7 +612,7 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
 
     // 2.5. Draw Virtual Gates if they have been generated
     if (!virtualGatesPath.isEmpty()) {
-        painter.setPen(QPen(Qt::yellow, 1));
+        painter.setPen(QPen(QColor(150, 120, 180), 1));
         painter.drawPath(trackTransform.map(virtualGatesPath));
     }
 
@@ -545,8 +632,8 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
         QPointF carPos = mapPos(driver.previousInterpPos);
         
         painter.setBrush(driver.color);
-        painter.setPen(QPen(Qt::white, 1));
-        painter.drawEllipse(carPos, 10, 10);
+        painter.setPen(QPen(driver.borderColor, 2)); // Use team-specific border color
+        painter.drawEllipse(carPos, 9, 9); // Slightly smaller radius to account for thicker border
         
         // Draw Simple Label: Just the abbreviation to reduce redundancy
         QString label = driver.abbreviation;
