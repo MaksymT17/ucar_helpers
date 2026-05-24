@@ -20,7 +20,7 @@ endif()
 add_executable(timing
     main.cpp
     track_widget.cpp
-    track_widget.h
+    virtual_gate_math.cpp
     assets.qrc
 )
 

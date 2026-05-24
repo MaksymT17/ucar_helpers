@@ -8,6 +8,13 @@
 #include <QFileInfo>
 #include <cmath>
 
+// Forward declaration for the function in virtual_gate_math.cpp
+std::vector<VirtualGate> generateVirtualGatesFromTelemetry(
+    const std::vector<TelemetryEntry>& telemetry,
+    float gateInterval,
+    float normalizedGateWidth
+);
+
 TrackSimulatorWidget::TrackSimulatorWidget(QWidget *parent) 
     : QWidget(parent), currentSpeed(0.0001f) {
     
@@ -19,8 +26,7 @@ TrackSimulatorWidget::TrackSimulatorWidget(QWidget *parent)
 
     animationTimer = new QTimer(this);
     connect(animationTimer, &QTimer::timeout, this, &TrackSimulatorWidget::updateAnimation);
-    animationTimer->start(16); // ~60 FPS
-
+    // The timer is now started by the 'Start race' button
     setMinimumSize(800, 600);
 }
 
@@ -45,7 +51,7 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
     QStringList parts = fileName.split('_');
     QString abb = "UNK";
     for(const QString& p : parts) if(p.length() == 3 && p == p.toUpper()) abb = p;
-    if(abb == "UNK" && parts.size() >= 3) abb = parts[2]; 
+    if(abb == "UNK" && parts.size() >= 3) abb = parts[2];
 
     QTextStream in(&file);
     QString header = in.readLine(); // Skip header
@@ -82,6 +88,7 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
 
     DriverSimState newDriver;
     newDriver.abbreviation = abb;
+    newDriver.isPoleLap = fileName.contains("_POLE_", Qt::CaseInsensitive);
     // Assign a color based on the number of drivers already loaded
     newDriver.color = QColor::fromHsv((drivers.size() * 40) % 360, 200, 255);
     
@@ -188,6 +195,7 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
 }
 
 void TrackSimulatorWidget::clearTelemetry() {
+    animationTimer->stop();
     drivers.clear();
     gateDistances.clear();
     simTime = 0.0f;
@@ -196,6 +204,81 @@ void TrackSimulatorWidget::clearTelemetry() {
     isDataDriven = false;
     leaderboardTimer = 0.0f;
     emit leaderboardUpdated(QStringList());
+    update();
+}
+
+void TrackSimulatorWidget::startRace() {
+    qDebug() << "Race start triggered.";
+    if (!animationTimer->isActive() && !drivers.empty()) {
+        qDebug() << "Starting animation timer.";
+        animationTimer->start(16); // ~60 FPS
+    }
+}
+
+void TrackSimulatorWidget::generateVirtualGates() {
+    qDebug() << "Generate VGs button clicked.";
+
+    // This function now has robust logic to ensure only a SINGLE LAP of telemetry
+    // is used for gate generation, preventing the "thousands of gates" issue when
+    // falling back to full-race data.
+
+    const DriverSimState* poleDriver = nullptr;
+    for (const auto& driver : drivers) {
+        if (driver.isPoleLap) {
+            poleDriver = &driver;
+            break;
+        }
+    }
+    
+    const std::vector<TelemetryEntry>* telemetryForGeneration = nullptr;
+    static std::vector<TelemetryEntry> singleLapTelemetry; // Static to keep data in scope for the pointer
+
+    if (poleDriver) {
+        qDebug() << "Using dedicated POLE lap data from" << poleDriver->abbreviation;
+        telemetryForGeneration = &poleDriver->telemetry;
+    } else {
+        qWarning() << "Could not find a POLE lap driver to generate Virtual Gates.";
+        if (!drivers.empty()) {
+            const DriverSimState* fallbackDriver = &drivers[0];
+            qWarning() << "Defaulting to first loaded driver and extracting a single lap:" << fallbackDriver->abbreviation;
+
+            // Extract a single, clean lap (e.g., Lap 2) from the full race telemetry.
+            singleLapTelemetry.clear();
+            int targetLap = 2; // Lap 2 is usually cleaner than lap 1
+            for(const auto& entry : fallbackDriver->telemetry) {
+                if (entry.lapNumber == targetLap) singleLapTelemetry.push_back(entry);
+            }
+            // If Lap 2 had no data (e.g. short race), try Lap 1 as a backup.
+            if (singleLapTelemetry.empty()) {
+                qWarning() << "Could not find any data for Lap 2, trying Lap 1.";
+                for(const auto& entry : fallbackDriver->telemetry) {
+                    if (entry.lapNumber == 1) singleLapTelemetry.push_back(entry);
+                }
+            }
+            telemetryForGeneration = &singleLapTelemetry;
+        } else {
+            qWarning() << "No drivers loaded, cannot generate gates.";
+            return;
+        }
+    }
+
+    if (!telemetryForGeneration || telemetryForGeneration->empty()) {
+        qWarning() << "Selected telemetry for VG generation is empty or invalid.";
+        return;
+    }
+
+    virtualGates.clear();
+    virtualGatesPath = QPainterPath();
+    float gateInterval = 200.0f; // As per requirements
+    float normalizedGateWidth = 0.02f; // Visual width for the gate lines
+    
+    virtualGates = generateVirtualGatesFromTelemetry(*telemetryForGeneration, gateInterval, normalizedGateWidth);
+
+    for (const auto& gate : virtualGates) {
+        virtualGatesPath.moveTo(gate.p1);
+        virtualGatesPath.lineTo(gate.p2);
+    }
+    qDebug() << "Generated" << virtualGates.size() << "virtual gates.";
     update();
 }
 
@@ -412,6 +495,12 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
             }
             painter.drawPath(revealPath);
         }
+    }
+
+    // 2.5. Draw Virtual Gates if they have been generated
+    if (!virtualGatesPath.isEmpty()) {
+        painter.setPen(QPen(Qt::yellow, 1));
+        painter.drawPath(trackTransform.map(virtualGatesPath));
     }
 
     // 3. Draw All Drivers

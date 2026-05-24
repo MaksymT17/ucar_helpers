@@ -5,6 +5,7 @@
 #include <QHBoxLayout>
 #include <QListWidget>
 #include <QLabel>
+#include <QPushButton>
 #include <QComboBox>
 #include "track_widget.h"
 
@@ -26,6 +27,14 @@ int main(int argc, char *argv[]) {
     sidebar->addWidget(header);
     sidebar->addWidget(leaderboardList);
 
+    // Add the "Generate VGs" button
+    QPushButton *vgButton = new QPushButton("Generate VGs");
+    sidebar->addWidget(vgButton);
+
+    // Add the "Start race" button
+    QPushButton *startButton = new QPushButton("Start race");
+    sidebar->addWidget(startButton);
+
     sidebar->addWidget(new QLabel("Select Track:"));
     QComboBox *trackSelector = new QComboBox();
     trackSelector->addItem("Australia");
@@ -38,6 +47,12 @@ int main(int argc, char *argv[]) {
 
     TrackSimulatorWidget *viewer = new TrackSimulatorWidget();
     layout->addWidget(viewer, 1); // Widget takes remaining space
+
+    // Connect the button to the widget's slot
+    QObject::connect(vgButton, &QPushButton::clicked, viewer, &TrackSimulatorWidget::generateVirtualGates);
+
+    // Connect the start button to the widget's slot
+    QObject::connect(startButton, &QPushButton::clicked, viewer, &TrackSimulatorWidget::startRace);
 
     // Connect the 5-second signal to update the UI list
     QObject::connect(viewer, &TrackSimulatorWidget::leaderboardUpdated, [leaderboardList](const QStringList &entries) {

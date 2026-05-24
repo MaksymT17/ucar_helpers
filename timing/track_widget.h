@@ -19,6 +19,16 @@ struct TelemetryEntry {
     int lapNumber;
 };
 
+// Represents a virtual gate: a line perpendicular to the track at a specific distance.
+struct VirtualGate {
+    int id;
+    float distance;
+    QPointF center;
+    QPointF p1;
+    QPointF p2;
+    QPointF normal;
+};
+
 struct TrackConfig {
     QString name;
     QString imagePath;
@@ -40,6 +50,7 @@ struct DriverSimState {
     float lapStartTime = 0.0f;
     int currentLap = 1;
     size_t lastIndex = 0;
+    bool isPoleLap = false;
     QColor color;
     std::map<int, float> gateCrossingTimes; // GateIndex -> simTime
     int nextGateIndex = 0;
@@ -57,6 +68,10 @@ public:
 signals:
     void leaderboardUpdated(const QStringList &entries);
 
+public slots:
+    void generateVirtualGates();
+    void startRace();
+
 protected:
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
@@ -72,6 +87,8 @@ private:
     TrackConfig currentConfig;
     QPainterPath trackPath;
     QPainterPath scaledPath; // Path scaled to current widget size (full widget)
+    std::vector<VirtualGate> virtualGates;
+    QPainterPath virtualGatesPath;
     
     float simTime = 0.0f;
     size_t maxRevealedIndex = 0;
