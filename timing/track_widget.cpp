@@ -111,30 +111,7 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
     newDriver.currentLap = !newDriver.telemetry.empty() ? newDriver.telemetry.front().lapNumber : 1;
     newDriver.lapStartTime = 0.0f;
     newDriver.lastLapTime = 0.0f;
-
-    maxRevealedIndex = 0;
-    lapCompleted = false;
-
-    // Initialize global simTime to the first valid timestamp to avoid dead time
-    if (drivers.empty() && !newDriver.telemetry.empty()) {
-        simTime = newDriver.telemetry.front().time;
-    }
-
-    // Initialize Absolute Virtual Gates (referenced to finish line = 0)
-    if (gateDistances.empty()) {
-        gateDistances.clear();
-        // Create gates from -1km (before line) to 300km (race end)
-        for (float d = -1000.0f; d < 305000.0f; d += 250.0f) {
-            gateDistances.push_back(d);
-        }
-    }
-
-    // Align this specific driver to the correct starting gate
-    float startCorrected = newDriver.distanceTraveled - newDriver.lap1FinishDist;
-    newDriver.nextGateIndex = 0;
-    while (newDriver.nextGateIndex < (int)gateDistances.size() && gateDistances[newDriver.nextGateIndex] <= startCorrected) {
-        newDriver.nextGateIndex++;
-    }
+    newDriver.nextGateIndex = 0; // All drivers start before the first gate.
 
     drivers.push_back(newDriver);
     isDataDriven = true;
@@ -173,6 +150,10 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
             
             t.normalizedPos = QPointF(nx, ny);
         }
+        // Initialize previous position for VG crossing detection
+        if (!d.telemetry.empty()) {
+            d.previousInterpPos = d.telemetry.front().normalizedPos;
+        }
     }
 
     // 4. GENERATE TRACK PATH FROM FIRST DRIVER TO REFLECT NEW GLOBAL NORMALIZATION
@@ -197,30 +178,31 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
 void TrackSimulatorWidget::clearTelemetry() {
     animationTimer->stop();
     drivers.clear();
-    gateDistances.clear();
+    virtualGates.clear();
+    virtualGatesPath = QPainterPath();
     simTime = 0.0f;
     maxRevealedIndex = 0;
     lapCompleted = false;
     isDataDriven = false;
     leaderboardTimer = 0.0f;
+    // The old gate distances are no longer used, but clearing doesn't hurt.
+    gateDistances.clear();
     emit leaderboardUpdated(QStringList());
     update();
 }
 
 void TrackSimulatorWidget::startRace() {
     qDebug() << "Race start triggered.";
-    if (!animationTimer->isActive() && !drivers.empty()) {
+    if (!animationTimer->isActive() && !drivers.empty() && !virtualGates.empty()) {
         qDebug() << "Starting animation timer.";
         animationTimer->start(16); // ~60 FPS
+    } else if (virtualGates.empty()) {
+        qWarning() << "Cannot start race: Virtual Gates have not been generated yet.";
     }
 }
 
 void TrackSimulatorWidget::generateVirtualGates() {
     qDebug() << "Generate VGs button clicked.";
-
-    // This function now has robust logic to ensure only a SINGLE LAP of telemetry
-    // is used for gate generation, preventing the "thousands of gates" issue when
-    // falling back to full-race data.
 
     const DriverSimState* poleDriver = nullptr;
     for (const auto& driver : drivers) {
@@ -232,15 +214,16 @@ void TrackSimulatorWidget::generateVirtualGates() {
     
     const std::vector<TelemetryEntry>* telemetryForGeneration = nullptr;
     static std::vector<TelemetryEntry> singleLapTelemetry; // Static to keep data in scope for the pointer
+    QString sourceDriverName;
 
     if (poleDriver) {
         qDebug() << "Using dedicated POLE lap data from" << poleDriver->abbreviation;
         telemetryForGeneration = &poleDriver->telemetry;
+        sourceDriverName = poleDriver->abbreviation;
     } else {
         qWarning() << "Could not find a POLE lap driver to generate Virtual Gates.";
         if (!drivers.empty()) {
-            const DriverSimState* fallbackDriver = &drivers[0];
-            qWarning() << "Defaulting to first loaded driver and extracting a single lap:" << fallbackDriver->abbreviation;
+            const DriverSimState* fallbackDriver = &drivers[0]; qWarning() << "Defaulting to first loaded driver and extracting a single lap:" << fallbackDriver->abbreviation;
 
             // Extract a single, clean lap (e.g., Lap 2) from the full race telemetry.
             singleLapTelemetry.clear();
@@ -255,6 +238,7 @@ void TrackSimulatorWidget::generateVirtualGates() {
                     if (entry.lapNumber == 1) singleLapTelemetry.push_back(entry);
                 }
             }
+
             telemetryForGeneration = &singleLapTelemetry;
         } else {
             qWarning() << "No drivers loaded, cannot generate gates.";
@@ -278,7 +262,7 @@ void TrackSimulatorWidget::generateVirtualGates() {
         virtualGatesPath.moveTo(gate.p1);
         virtualGatesPath.lineTo(gate.p2);
     }
-    qDebug() << "Generated" << virtualGates.size() << "virtual gates.";
+    qDebug() << "Generated" << virtualGates.size() << "virtual gates from" << sourceDriverName << "data.";
     update();
 }
 
@@ -311,44 +295,67 @@ void TrackSimulatorWidget::mousePressEvent(QMouseEvent *event) {
 }
 
 void TrackSimulatorWidget::updateAnimation() {
-    if (trackPath.elementCount() < 2) return;
+    // Do not run simulation if data isn't loaded.
+    // If race has started, also require VGs to be generated.
+    if (!isDataDriven || drivers.empty() || (animationTimer->isActive() && virtualGates.empty())) {
+        if (animationTimer->isActive() && virtualGates.empty()) {
+            qWarning() << "Race started but Virtual Gates not generated. Please generate VGs.";
+            animationTimer->stop();
+        }
+        return;
+    }
 
     if (isDataDriven && !drivers.empty()) {
+        float previousSimTime = simTime;
         simTime += 0.016f; // Advance session time by 16ms
         leaderboardTimer += 0.016f;
 
         // Update Leaderboard Order every 5 seconds (or immediately if just started)
         if (leaderboardTimer >= 5.0f || (leaderboardTimer > 0.01f && leaderboardTimer < 0.04f)) {
             leaderboardTimer = 0.0f;
+            
+            std::vector<DriverSimState*> sorted;
+            for (auto& d : drivers) sorted.push_back(&d);
 
-            // Sort by current total distance to find the leader
-            std::vector<const DriverSimState*> sorted;
-            for (const auto& d : drivers) sorted.push_back(&d);
+            // Sort drivers based on Virtual Gate progress
             std::sort(sorted.begin(), sorted.end(), [](const DriverSimState* a, const DriverSimState* b) {
-                return (a->distanceTraveled - a->lap1FinishDist) > (b->distanceTraveled - b->lap1FinishDist);
+                // Primary sort: number of gates crossed (more is better)
+                if (a->nextGateIndex != b->nextGateIndex) {
+                    return a->nextGateIndex > b->nextGateIndex;
+                }
+                // Secondary sort: for drivers on the same gate, who crossed it first (less time is better)
+                if (a->nextGateIndex > 0) {
+                    int lastGateIdx = a->nextGateIndex - 1;
+                    if (a->gateCrossingTimes.count(lastGateIdx) && b->gateCrossingTimes.count(lastGateIdx)) {
+                        return a->gateCrossingTimes.at(lastGateIdx) < b->gateCrossingTimes.at(lastGateIdx);
+                    }
+                }
+                // Fallback: maintain original order if no other criteria match
+                return false;
             });
 
-            const DriverSimState* leader = sorted.empty() ? nullptr : sorted[0];
+            const DriverSimState* leader = sorted.empty() ? nullptr : sorted.front();
             QStringList entries;
 
             for (size_t i = 0; i < sorted.size(); ++i) {
                 QString gapStr = "LEADER";
                 if (i > 0 && leader) {
-                    // Calculate gap based on the last shared gate
-                    int lastGate = sorted[i]->nextGateIndex - 1;
-                    if (lastGate >= 0 && 
-                        leader->gateCrossingTimes.count(lastGate) && 
-                        sorted[i]->gateCrossingTimes.count(lastGate)) {
-                        
-                        float gap = sorted[i]->gateCrossingTimes.at(lastGate) - leader->gateCrossingTimes.at(lastGate);
+                    // Calculate gap based on the last commonly crossed virtual gate
+                    int commonGateIndex = std::min(leader->nextGateIndex, sorted[i]->nextGateIndex) - 1;
+                    if (commonGateIndex >= 0 &&
+                        leader->gateCrossingTimes.count(commonGateIndex) &&
+                        sorted[i]->gateCrossingTimes.count(commonGateIndex)) {
+                        float gap = sorted[i]->gateCrossingTimes.at(commonGateIndex) - leader->gateCrossingTimes.at(commonGateIndex);
                         gapStr = QString("+%1s").arg(gap, 0, 'f', 3);
                     } else {
                         gapStr = "---";
                     }
                 }
-                
-                entries << QString("%1. %2 (L%3) %4")
-                    .arg(i + 1).arg(sorted[i]->abbreviation).arg(sorted[i]->currentLap).arg(gapStr);
+                // For debugging, show the last passed VG index instead of the lap number.
+                int lastPassedGate = sorted[i]->nextGateIndex - 1;
+                QString vgLabel = (lastPassedGate < 0) ? "Start" : QString("VG%1").arg(lastPassedGate);
+                entries << QString("%1. %2 (%3) %4")
+                    .arg(i + 1).arg(sorted[i]->abbreviation).arg(vgLabel).arg(gapStr);
             }
             emit leaderboardUpdated(entries);
         }
@@ -366,15 +373,59 @@ void TrackSimulatorWidget::updateAnimation() {
                    driver.telemetry[driver.lastIndex + 1].time <= simTime) {
                 driver.lastIndex++;
             }
+            
+            // Interpolate position for smooth animation
+            QPointF interpPos;
+            size_t idx = driver.lastIndex;
+            if (idx < driver.telemetry.size() - 1) {
+                const auto& t0 = driver.telemetry[idx];
+                const auto& t1 = driver.telemetry[idx + 1];
+                float segmentDuration = t1.time - t0.time;
+                float factor = (segmentDuration > 0.001f) ? std::clamp((simTime - t0.time) / segmentDuration, 0.0f, 1.0f) : 0.0f;
+                interpPos = t0.normalizedPos + (t1.normalizedPos - t0.normalizedPos) * factor;
+            } else {
+                interpPos = driver.telemetry[idx].normalizedPos;
+            }
 
-            // Record Gate Crossing
-            float correctedDist = driver.distanceTraveled - driver.lap1FinishDist;
-            if (!gateDistances.empty() && driver.nextGateIndex < (int)gateDistances.size()) {
-                if (correctedDist >= gateDistances[driver.nextGateIndex]) {
-                    driver.gateCrossingTimes[driver.nextGateIndex] = simTime;
-                    driver.nextGateIndex++;
+            // --- VIRTUAL GATE CROSSING DETECTION ---
+            // A driver can cross multiple gates in one physics tick if the tick is long or speed is high.
+            while (true) { // Loop until no more gates are crossed in this frame
+                if (virtualGates.empty()) break;
+
+                int currentGateInLap = driver.nextGateIndex % virtualGates.size();
+                const auto& gate = virtualGates[currentGateInLap];
+                
+                float d_old = QPointF::dotProduct(driver.previousInterpPos - gate.center, gate.normal);
+                float d_new = QPointF::dotProduct(interpPos - gate.center, gate.normal);
+
+                // A crossing occurs when the car moves from the "negative" side of the gate normal to the "positive" side.
+                // d_old should be <= 0 and d_new should be > 0.
+                if (d_old <= 0 && d_new > 0) {
+                    float crossingTime;
+                    float total_dist = d_old - d_new;
+                    if (total_dist > 1e-6) {
+                        float factor = d_old / total_dist;
+                        crossingTime = previousSimTime + (simTime - previousSimTime) * factor;
+                    } else {
+                        crossingTime = simTime; // Fallback
+                    }
+
+                    // If this is the first gate crossing of the race, set the start time.
+                    if (driver.nextGateIndex == 0 && driver.vgStartTime < 0.0f) {
+                        driver.vgStartTime = crossingTime;
+                    }
+
+                    // Record the time relative to the start time.
+                    if (driver.vgStartTime >= 0.0f) {
+                        driver.gateCrossingTimes[driver.nextGateIndex] = crossingTime - driver.vgStartTime;
+                    }
+                    
+                    driver.nextGateIndex++; // Increment total gates passed
+                } else {
+                    break; // No crossing for this gate, check next frame
                 }
             }
+            driver.previousInterpPos = interpPos;
 
             // Detect Lap Change
             int newLap = driver.telemetry[driver.lastIndex].lapNumber;
@@ -402,32 +453,7 @@ void TrackSimulatorWidget::updateAnimation() {
         return;
     }
 
-    // Fallback heuristic for a single ghost car if no data is loaded
-    static float progress = 0.0f;
-    // 1. Look ahead to detect corners (sample 3% of the track ahead)
-    float lookAheadProgress = std::fmod(progress + 0.03f, 1.0f);
-    
-    // 2. Calculate direction change (Curvature)
-    // QPainterPath::angleAtPercent returns the tangent angle
-    float currentAngle = trackPath.angleAtPercent(progress);
-    float futureAngle  = trackPath.angleAtPercent(lookAheadProgress);
-    
-    float angleDiff = std::abs(futureAngle - currentAngle);
-    if (angleDiff > 180.0f) angleDiff = 360.0f - angleDiff; // Handle 360/0 crossover
-
-    // 3. Determine Target Speed
-    // If angleDiff is high (sharp corner), target speed is low.
-    // Heuristic: reduce speed by up to 70% in sharp turns
-    float curvatureFactor = std::clamp(angleDiff / 45.0f, 0.0f, 1.0f); 
-    float targetSpeed = maxSpeed * (1.0f - (curvatureFactor * 0.75f));
-
-    // 4. Smooth Acceleration/Braking
-    float lerpFactor = (targetSpeed < currentSpeed) ? 0.15f : 0.03f; // Brake 5x faster than accel
-    currentSpeed += (targetSpeed - currentSpeed) * lerpFactor;
-
-    progress += currentSpeed;
-    if (progress > 1.0f) progress -= 1.0f;
-    update(); // Redraw
+    // Fallback heuristic for a single ghost car is now effectively disabled by the guards above.
 }
 
 void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
@@ -513,25 +539,10 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
             continue;
         }
 
-        QPointF interpPos;
-        size_t idx = driver.lastIndex;
-
-        // Linear Interpolation: Smooth out movement between telemetry samples
-        if (idx < driver.telemetry.size() - 1) {
-            const auto& t0 = driver.telemetry[idx];
-            const auto& t1 = driver.telemetry[idx + 1];
-            float segmentDuration = t1.time - t0.time;
-            
-            float factor = (segmentDuration > 0.001f) 
-                ? std::clamp((simTime - t0.time) / segmentDuration, 0.0f, 1.0f) 
-                : 0.0f;
-
-            interpPos = t0.normalizedPos + (t1.normalizedPos - t0.normalizedPos) * factor;
-        } else {
-            interpPos = driver.telemetry[idx].normalizedPos;
-        }
-
-        QPointF carPos = mapPos(interpPos);
+        // The driver's position for the current frame was calculated in updateAnimation
+        // and is stored in previousInterpPos. We draw the car at this position.
+        // This ensures drawing is consistent with the logic (like VG crossings).
+        QPointF carPos = mapPos(driver.previousInterpPos);
         
         painter.setBrush(driver.color);
         painter.setPen(QPen(Qt::white, 1));

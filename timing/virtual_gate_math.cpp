@@ -68,13 +68,17 @@ std::vector<VirtualGate> generateVirtualGatesFromTelemetry(
             const float interpolationFactor = distanceIntoSegment / segmentTotalDist;
 
             const QPointF gateCenterPos = prevPos + (currPos - prevPos) * interpolationFactor;
+            
+            // The tangent is the normalized direction of travel. This will be the NORMAL to our gate line.
             const QPointF tangent = getUnitVector(currPos - prevPos);
-            const QPointF normal = QPointF(-tangent.y(), tangent.x());
+            
+            // The direction of the gate line itself is perpendicular to the tangent.
+            const QPointF gateLineDir = QPointF(-tangent.y(), tangent.x());
 
-            const QPointF p1 = gateCenterPos - normal * (normalizedGateWidth / 2.0f);
-            const QPointF p2 = gateCenterPos + normal * (normalizedGateWidth / 2.0f);
+            const QPointF p1 = gateCenterPos - gateLineDir * (normalizedGateWidth / 2.0f);
+            const QPointF p2 = gateCenterPos + gateLineDir * (normalizedGateWidth / 2.0f);
 
-            gates.push_back({gateId++, nextGateDist, gateCenterPos, p1, p2, normal});
+            gates.push_back({gateId++, nextGateDist, gateCenterPos, p1, p2, tangent}); // Store the tangent as the gate's normal
             
             nextGateDist += gateInterval;
         }

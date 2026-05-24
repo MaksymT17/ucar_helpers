@@ -50,7 +50,9 @@ struct DriverSimState {
     float lapStartTime = 0.0f;
     int currentLap = 1;
     size_t lastIndex = 0;
+    QPointF previousInterpPos;
     bool isPoleLap = false;
+    float vgStartTime = -1.0f; // Time of crossing the first VG (VG[0])
     QColor color;
     std::map<int, float> gateCrossingTimes; // GateIndex -> simTime
     int nextGateIndex = 0;
