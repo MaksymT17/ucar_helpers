@@ -42,6 +42,8 @@ int main(int argc, char *argv[]) {
     trackSelector->addItem("China");
     trackSelector->addItem("Japan");
     trackSelector->addItem("Miami");
+    trackSelector->addItem("Canada");
+
     sidebar->addWidget(trackSelector);
 
     layout->addLayout(sidebar);
@@ -86,6 +88,14 @@ int main(int argc, char *argv[]) {
             config.scale = 0.79f;
             config.offsetX = -0.042f;
             config.offsetY = 0.03f;
+        } else if (gpName == "canada") {
+            // NOTE: Default values, will likely need tuning!
+            config.rotation = -57.5f;
+            config.flipX = false;
+            config.flipY = true;
+            config.scale = 0.95f;
+            config.offsetX = -0.018f;
+            config.offsetY = -0.022f;
         } else if (gpName == "china") {
             config.rotation = 122.0f;
             config.flipX = false;

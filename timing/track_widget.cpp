@@ -95,9 +95,10 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
     while (!in.atEnd()) {
         QString line = in.readLine();
         QStringList fields = line.split(',');
+
         if (fields.size() < 9) continue;
 
-        // CSV format: Index, TimeSeconds, X, Y, Speed, Distance, Throttle, Brake, LapNumber
+        // CSV format: [Index,] TimeSeconds, X, Y, Speed, Distance, Throttle, Brake, LapNumber
         RawEntry entry;
         entry.time = fields[1].toFloat();
         entry.x = fields[2].toFloat();
