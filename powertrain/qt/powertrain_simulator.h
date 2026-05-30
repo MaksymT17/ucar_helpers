@@ -2,34 +2,7 @@
 #define POWERTRAIN_SIMULATOR_H
 
 #include <cmath>
-
-enum class CoolingAction {
-    LIQUID_WARM = -1,
-    TURNED_OFF = 0,
-    LIQUID_LOW = 1,
-    LIQUID_MED = 2,
-    LIQUID_HIGH = 3
-};
-
-enum class PrecheckStatus {
-    Initializing = 0,
-    HeatingBattery = 1,
-    CoolingBattery = 2,
-    HeatingPT = 3,
-    CoolingPT = 4,
-    Ready = 5
-};
-
-enum class PowertrainConfig {
-    RWD = 0,
-    AWD = 1
-};
-
-enum class DriveMode {
-    ECONOMIC = 0,
-    NORMAL = 1,
-    SPORT = 2
-};
+#include "vehicle_dto.h"
 
 class EVPowertrainSimulator {
 public:
