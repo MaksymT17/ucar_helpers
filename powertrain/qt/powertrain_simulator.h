@@ -135,8 +135,8 @@ private:
     double smoothPowerLimit = 1.0;
 
     // Drive Mode & Hysteresis
-    DriveMode driveMode = DriveMode::SPORT;
-    double driveModeLimit = 1.0;
+    DriveMode driveMode = DriveMode::NORMAL;
+    double driveModeLimit = 0.75;
     double modeSwitchTimer = 30.0; // Ready for first change
 
     // Powertrain Configuration

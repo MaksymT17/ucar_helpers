@@ -112,12 +112,14 @@ private:
     QSlider *ambientSlider;
     QLabel *motorTempLabel;
     QLabel *inverterTempLabel;
+    QLabel *frontMotorTempLabel;
+    QLabel *frontInverterTempLabel;
     QLabel *batteryTempLabel;
     QLabel *coolantMILabel;
     QLabel *coolantBatLabel;
 
-    QLabel *coolingMotorLabel;
-    QLabel *coolingInverterLabel;
+    QLabel *coolingRearPTLabel;
+    QLabel *coolingFrontPTLabel;
     QLabel *coolingBatteryLabel;
 
     QLabel *topViewImageLabel;

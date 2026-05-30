@@ -23,7 +23,8 @@ WindFlowWidget::WindFlowWidget(QWidget *parent) : QWidget(parent) {
             update();
         }
     });
-    animTimer->start(30); // ~33 FPS
+    // Aligned with the 50ms global simulation timer to prevent event loop desync
+    animTimer->start(50); // ~20 FPS 
 
     // Generate semi-random flow lines (reproducible seed for visual stability)
     srand(42);
@@ -130,17 +131,17 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     batteryLabel = new QLabel("Battery: 75.00 kWh");
     distLabel = new QLabel("Distance: 0.000 km");
     timeLabel = new QLabel("Trip Time: 00:00:00");
-    coolingMotorLabel    = new QLabel("Motor:    NONE");
-    coolingInverterLabel = new QLabel("Inverter: NONE");
-    coolingBatteryLabel  = new QLabel("Battery:  NONE");
+    coolingRearPTLabel   = new QLabel("Rear M/I  : NONE");
+    coolingFrontPTLabel  = new QLabel("Front M/I : NONE");
+    coolingBatteryLabel  = new QLabel("Battery   : NONE");
     // Unified styling for telemetry labels
     // Unified compact styling for the Stats Grid
     QString statStyle = "color: #e0e0e0; font-family: 'Helvetica'; font-size: 12px;";
     batteryLabel->setStyleSheet(statStyle);
     distLabel->setStyleSheet(statStyle);
     timeLabel->setStyleSheet(statStyle);
-    coolingMotorLabel->setStyleSheet(statStyle);
-    coolingInverterLabel->setStyleSheet(statStyle);
+    coolingRearPTLabel->setStyleSheet(statStyle);
+    coolingFrontPTLabel->setStyleSheet(statStyle);
     coolingBatteryLabel->setStyleSheet(statStyle);
     // Power Label
     powerLabel = new QLabel("--- kWh/100km");
@@ -197,9 +198,10 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     statsLayout->addWidget(sep, 0, 1, 4, 1);
 
     // Column 2: Cooling Status for each component
-    statsLayout->addWidget(coolingMotorLabel, 1, 2);
-    statsLayout->addWidget(coolingInverterLabel, 2, 2);
+    statsLayout->addWidget(coolingRearPTLabel, 1, 2);
+    statsLayout->addWidget(coolingFrontPTLabel, 2, 2);
     statsLayout->addWidget(coolingBatteryLabel, 3, 2);
+    coolingFrontPTLabel->hide(); // Hidden by default (RWD)
 
     leftCol->addWidget(statsBox);
 
@@ -222,9 +224,9 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     QVBoxLayout *midCol = new QVBoxLayout();
     midCol->setContentsMargins(10, 10, 10, 10); // Padding for the middle column
     
-    QLabel *thermalHeader = new QLabel("THERMAL MONITOR");
-    thermalHeader->setFont(QFont("Verdana", 18, QFont::Bold));
-    midCol->addWidget(thermalHeader);
+    //QLabel *thermalHeader = new QLabel("THERMAL MONITOR");
+    //thermalHeader->setFont(QFont("Verdana", 18, QFont::Bold));
+    //midCol->addWidget(thermalHeader);
 
     // --- Consolidated Thermal Monitor Box ---
     QGroupBox *tempBox = new QGroupBox("Thermal Monitor");
@@ -248,9 +250,9 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
 
     // --- RIGHT COLUMN: System Info ---
     QVBoxLayout *rightCol = new QVBoxLayout();
-    QLabel *header = new QLabel("SYSTEM INFO");
-    header->setFont(QFont("Verdana", 18, QFont::Bold));
-    rightCol->addWidget(header); // System Info header
+    //QLabel *header = new QLabel("SYSTEM INFO");
+    //header->setFont(QFont("Verdana", 18, QFont::Bold));
+    //rightCol->addWidget(header); // System Info header
 
     rightCol->addLayout(setupSpecBox());
     rightCol->addLayout(setupSurfaceSelectionBox());
@@ -260,7 +262,7 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     rightCol->addLayout(setupGradientBox());
     rightCol->addStretch();
 
-    mainLayout->addLayout(rightCol, 10);
+    mainLayout->addLayout(rightCol, 7); // Reduced width by an additional ~10%
 
     // Setup Simulation Timer (50ms)
     simTimer = new QTimer(this);
@@ -526,7 +528,7 @@ QVBoxLayout* SpecViewer::setupDriveModeBox() {
     driveModeSelector->addItem("Economic (50%)");
     driveModeSelector->addItem("Normal (75%)");
     driveModeSelector->addItem("Sport (100%)");
-    driveModeSelector->setCurrentIndex(2); // Start in Sport
+    driveModeSelector->setCurrentIndex(1); // Start in Normal
     driveModeSelector->setStyleSheet("QComboBox { color: white; background-color: #333; }");
     
     connect(driveModeSelector, QOverload<int>::of(&QComboBox::currentIndexChanged), 
@@ -590,12 +592,16 @@ QGridLayout* SpecViewer::setupTemperatureBox() {
     coolantMILabel = new QLabel("Coolant M/I: 25.0°C");
     motorTempLabel = new QLabel("Motor:       25.0°C");
     inverterTempLabel = new QLabel("Inverter:    25.0°C");
+    frontMotorTempLabel = new QLabel("Front Motor: 25.0°C");
+    frontInverterTempLabel = new QLabel("Front Inv:   25.0°C");
     coolantBatLabel = new QLabel("Coolant Bat: 25.0°C");
     batteryTempLabel = new QLabel("Battery:     25.0°C");
 
     coolantMILabel->setStyleSheet(style);
     motorTempLabel->setStyleSheet(style);
     inverterTempLabel->setStyleSheet(style);
+    frontMotorTempLabel->setStyleSheet(style);
+    frontInverterTempLabel->setStyleSheet(style);
     coolantBatLabel->setStyleSheet(style);
     batteryTempLabel->setStyleSheet(style);
 
@@ -604,11 +610,17 @@ QGridLayout* SpecViewer::setupTemperatureBox() {
     grid->addWidget(motorTempLabel,    0, 1, Qt::AlignLeft);
     grid->addWidget(inverterTempLabel, 1, 1, Qt::AlignLeft);
     
-    // Vertical spacing between groups
-    grid->setRowMinimumHeight(2, 15);
+    grid->addWidget(frontMotorTempLabel, 2, 1, Qt::AlignLeft);
+    grid->addWidget(frontInverterTempLabel, 3, 1, Qt::AlignLeft);
 
-    grid->addWidget(coolantBatLabel,   3, 0, Qt::AlignLeft);
-    grid->addWidget(batteryTempLabel,  3, 1, Qt::AlignLeft);
+    // Vertical spacing between groups
+    grid->setRowMinimumHeight(4, 15);
+
+    grid->addWidget(coolantBatLabel,   5, 0, Qt::AlignLeft);
+    grid->addWidget(batteryTempLabel,  5, 1, Qt::AlignLeft);
+
+    frontMotorTempLabel->hide();
+    frontInverterTempLabel->hide();
 
     return grid;
 }
@@ -710,16 +722,20 @@ void SpecViewer::onDriveModeChanged(int index) {
 }
 
 void SpecViewer::selectRwdConfig() {
-    QString rwdStyle = "background-color: #00d1ff; color: black; border: 1px solid #00d1ff; font-weight: bold; padding: 5px; border-top-left-radius: 4px; border-bottom-left-radius: 4px; border-right: none;";
-    QString awdStyle = "background-color: #222; color: #888; border: 1px solid #444; font-weight: bold; padding: 5px; border-top-right-radius: 4px; border-bottom-right-radius: 4px;";
+    QString rwdStyle = "QPushButton { background-color: #00d1ff; color: black; border: 1px solid #00d1ff; font-weight: bold; padding: 5px; border-top-left-radius: 4px; border-bottom-left-radius: 4px; border-right: none; }"
+                       "QPushButton:disabled { background-color: #005566; color: #333; border-color: #005566; }";
+    QString awdStyle = "QPushButton { background-color: #222; color: #888; border: 1px solid #444; font-weight: bold; padding: 5px; border-top-right-radius: 4px; border-bottom-right-radius: 4px; }"
+                       "QPushButton:disabled { background-color: #111; color: #444; border-color: #222; }";
     rwdButton->setStyleSheet(rwdStyle);
     awdButton->setStyleSheet(awdStyle);
     onConfigurationChanged(0);
 }
 
 void SpecViewer::selectAwdConfig() {
-    QString rwdStyle = "background-color: #222; color: #888; border: 1px solid #444; font-weight: bold; padding: 5px; border-top-left-radius: 4px; border-bottom-left-radius: 4px; border-right: none;";
-    QString awdStyle = "background-color: #00d1ff; color: black; border: 1px solid #00d1ff; font-weight: bold; padding: 5px; border-top-right-radius: 4px; border-bottom-right-radius: 4px;";
+    QString rwdStyle = "QPushButton { background-color: #222; color: #888; border: 1px solid #444; font-weight: bold; padding: 5px; border-top-left-radius: 4px; border-bottom-left-radius: 4px; border-right: none; }"
+                       "QPushButton:disabled { background-color: #111; color: #444; border-color: #222; }";
+    QString awdStyle = "QPushButton { background-color: #00d1ff; color: black; border: 1px solid #00d1ff; font-weight: bold; padding: 5px; border-top-right-radius: 4px; border-bottom-right-radius: 4px; }"
+                       "QPushButton:disabled { background-color: #005566; color: #333; border-color: #005566; }";
     rwdButton->setStyleSheet(rwdStyle);
     awdButton->setStyleSheet(awdStyle);
     onConfigurationChanged(1);
@@ -746,9 +762,15 @@ void SpecViewer::onConfigurationChanged(int index) {
         if (index == 1) { // AWD Selected
             visualFrontMotorTemp->show();
             visualFrontInverterTemp->show();
+            frontMotorTempLabel->show();
+            frontInverterTempLabel->show();
+            coolingFrontPTLabel->show();
         } else {
             visualFrontMotorTemp->hide();
             visualFrontInverterTemp->hide();
+            frontMotorTempLabel->hide();
+            frontInverterTempLabel->hide();
+            coolingFrontPTLabel->hide();
         }
 
         // Fallback to direct absolute path to bypass CMake/QRC caching issues
@@ -815,9 +837,33 @@ void SpecViewer::updateSimulation() {
     if (throttleSlider->value() != currentSimThrottle) throttleSlider->setValue(currentSimThrottle);
     if (brakeSlider->value() != currentSimBrake)       brakeSlider->setValue(currentSimBrake);
     
-    speedLabel->setText(QString("%1 km/h").arg(sim.getSpeedKmh(), 0, 'f', 1));
-    batteryLabel->setText(QString("Battery: %1 kWh (%2%)").arg(sim.getBatteryKwh(), 0, 'f', 2).arg(sim.getSOC(), 0, 'f', 1)); // Update battery status
-    distLabel->setText(QString("Distance: %1 km").arg(sim.getDistanceKm(), 0, 'f', 3));
+    // Lock Configuration once the EV is turned on. It remains locked until app restart.
+    if (sim.isIgnitionOn() && rwdButton->isEnabled()) {
+        rwdButton->setEnabled(false);
+        awdButton->setEnabled(false);
+        rwdButton->setCursor(Qt::ForbiddenCursor);
+        awdButton->setCursor(Qt::ForbiddenCursor);
+    }
+
+    // --- PERFORMANCE OPTIMIZATION: State Caching ---
+    // Only allocate new strings and update UI if values have noticeably changed
+    static double lastSpeed = -1.0;
+    if (std::abs(sim.getSpeedKmh() - lastSpeed) > 0.05) {
+        lastSpeed = sim.getSpeedKmh();
+        speedLabel->setText(QString("%1 km/h").arg(lastSpeed, 0, 'f', 1));
+    }
+
+    static double lastBat = -1.0;
+    if (std::abs(sim.getBatteryKwh() - lastBat) > 0.01) {
+        lastBat = sim.getBatteryKwh();
+        batteryLabel->setText(QString("Battery: %1 kWh (%2%)").arg(lastBat, 0, 'f', 2).arg(sim.getSOC(), 0, 'f', 1));
+    }
+
+    static double lastDist = -1.0;
+    if (std::abs(sim.getDistanceKm() - lastDist) > 0.001) {
+        lastDist = sim.getDistanceKm();
+        distLabel->setText(QString("Distance: %1 km").arg(lastDist, 0, 'f', 3));
+    }
     
     // Update wind flow animation based on relative velocity
     double v_rel = (sim.getSpeedKmh() / 3.6) - windSlider->value();
@@ -896,6 +942,12 @@ void SpecViewer::updateSimulation() {
     inverterTempLabel->setText(QString("Inverter:    %1°C").arg(sim.getInverterTemp(), 5, 'f', 1));
     inverterTempLabel->setStyleSheet(baseStyle + getTempColor(sim.getInverterTemp(), 75.0, 120.0));
     
+    frontMotorTempLabel->setText(QString("Front Motor: %1°C").arg(sim.getFrontMotorTemp(), 5, 'f', 1));
+    frontMotorTempLabel->setStyleSheet(baseStyle + getTempColor(sim.getFrontMotorTemp(), 90.0, 140.0));
+
+    frontInverterTempLabel->setText(QString("Front Inv:   %1°C").arg(sim.getFrontInverterTemp(), 5, 'f', 1));
+    frontInverterTempLabel->setStyleSheet(baseStyle + getTempColor(sim.getFrontInverterTemp(), 75.0, 120.0));
+
     coolantBatLabel->setText(QString("Coolant Bat: %1°C").arg(sim.getCoolantBatTemp(), 5, 'f', 1));
     
     // Update Visual Overlays with color-coded temperatures
@@ -936,9 +988,19 @@ void SpecViewer::updateSimulation() {
         }
     };
 
-    coolingMotorLabel->setText(QString("Motor:    %1").arg(actionToString(sim.getMotorAction())));
-    coolingInverterLabel->setText(QString("Inverter: %1").arg(actionToString(sim.getInverterAction())));
-    coolingBatteryLabel->setText(QString("Battery:  %1").arg(actionToString(sim.getBatteryAction())));
+    // Pump Logic: The loop's pump speed is dictated by the component that is hottest/most in need
+    auto getLoopAction = [](CoolingAction a, CoolingAction b) -> CoolingAction {
+        if (a == CoolingAction::LIQUID_WARM || b == CoolingAction::LIQUID_WARM) {
+            if (a > CoolingAction::TURNED_OFF) return a; // Active cooling takes priority over warm-up
+            if (b > CoolingAction::TURNED_OFF) return b;
+            return CoolingAction::LIQUID_WARM;
+        }
+        return (a > b) ? a : b;
+    };
+
+    coolingRearPTLabel->setText(QString("Rear M/I  : %1").arg(actionToString(getLoopAction(sim.getMotorAction(), sim.getInverterAction()))));
+    coolingFrontPTLabel->setText(QString("Front M/I : %1").arg(actionToString(getLoopAction(sim.getFrontMotorAction(), sim.getFrontInverterAction()))));
+    coolingBatteryLabel->setText(QString("Battery   : %1").arg(actionToString(sim.getBatteryAction())));
 }
 
 void SpecViewer::onIgnitionToggled() {
