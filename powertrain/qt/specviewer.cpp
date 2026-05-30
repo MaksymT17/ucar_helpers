@@ -131,9 +131,9 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     batteryLabel = new QLabel("Battery: 75.00 kWh");
     distLabel = new QLabel("Distance: 0.000 km");
     timeLabel = new QLabel("Trip Time: 00:00:00");
-    coolingRearPTLabel   = new QLabel("Rear M/I  : NONE");
-    coolingFrontPTLabel  = new QLabel("Front M/I : NONE");
-    coolingBatteryLabel  = new QLabel("Battery   : NONE");
+    coolingRearPTLabel   = new QLabel("Rear Loop: NONE");
+    coolingFrontPTLabel  = new QLabel("Front Loop: NONE");
+    coolingBatteryLabel  = new QLabel("Bat Loop: NONE");
     // Unified styling for telemetry labels
     // Unified compact styling for the Stats Grid
     QString statStyle = "color: #e0e0e0; font-family: 'Helvetica'; font-size: 12px;";
@@ -224,9 +224,9 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     QVBoxLayout *midCol = new QVBoxLayout();
     midCol->setContentsMargins(10, 10, 10, 10); // Padding for the middle column
     
-    //QLabel *thermalHeader = new QLabel("THERMAL MONITOR");
-    //thermalHeader->setFont(QFont("Verdana", 18, QFont::Bold));
-    //midCol->addWidget(thermalHeader);
+    QLabel *thermalHeader = new QLabel("THERMAL MONITOR");
+    thermalHeader->setFont(QFont("Verdana", 18, QFont::Bold));
+    midCol->addWidget(thermalHeader);
 
     // --- Consolidated Thermal Monitor Box ---
     QGroupBox *tempBox = new QGroupBox("Thermal Monitor");
@@ -250,9 +250,9 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
 
     // --- RIGHT COLUMN: System Info ---
     QVBoxLayout *rightCol = new QVBoxLayout();
-    //QLabel *header = new QLabel("SYSTEM INFO");
-    //header->setFont(QFont("Verdana", 18, QFont::Bold));
-    //rightCol->addWidget(header); // System Info header
+    QLabel *header = new QLabel("SYSTEM INFO");
+    header->setFont(QFont("Verdana", 18, QFont::Bold));
+    rightCol->addWidget(header); // System Info header
 
     rightCol->addLayout(setupSpecBox());
     rightCol->addLayout(setupSurfaceSelectionBox());
@@ -293,19 +293,22 @@ QVBoxLayout* SpecViewer::setupSpecBox() {
     specPowerLabel = addSpecRow(specLayout, "MAX_POWER", "210000 W");
     addSpecRow(specLayout, "BATTERY_CAPACITY", "75.00 kWh");
     addSpecRow(specLayout, "EFFICIENCY", "0.88");
-    addSpecRow(specLayout, "WHEEL_RADIUS", "0.33 m");
-    addSpecRow(specLayout, "DRAG_COEFF", "0.25");
-    addSpecRow(specLayout, "ROLLING_RESIST_COEFF", "0.0120");
+    specWheelRadiusLabel = addSpecRow(specLayout, "WHEEL_RADIUS", "0.36 m");
+    specDragLabel = addSpecRow(specLayout, "DRAG_COEFF", "0.255");
+    specRollResistFrontLabel = addSpecRow(specLayout, "ROLL_RESIST_FRONT", "0.0080");
+    specRollResistRearLabel = addSpecRow(specLayout, "ROLL_RESIST_REAR", "0.0100");
     
     specLayout->addSpacing(10);
 
-    // --- Fancy Configuration Selector ---
-    QLabel* configLabel = new QLabel("CONFIGURATION");
-    configLabel->setStyleSheet("color: #888; font-size: 10px; font-weight: bold; text-transform: uppercase; margin-top: 10px;");
-    specLayout->addWidget(configLabel);
-
+    // --- Unified Powertrain & Wheel Configuration Row ---
     QHBoxLayout *configLayout = new QHBoxLayout();
-    configLayout->setSpacing(0); // For segmented control look
+    configLayout->setContentsMargins(0, 10, 0, 0);
+
+    QLabel* configLabel = new QLabel("DRIVE:");
+    configLabel->setStyleSheet("color: #888; font-size: 10px; font-weight: bold; text-transform: uppercase;");
+
+    QHBoxLayout *buttonLayout = new QHBoxLayout();
+    buttonLayout->setSpacing(0); // For segmented control look
 
     rwdButton = new QPushButton("RWD");
     rwdButton->setCursor(Qt::PointingHandCursor);
@@ -316,9 +319,26 @@ QVBoxLayout* SpecViewer::setupSpecBox() {
     connect(rwdButton, &QPushButton::clicked, this, &SpecViewer::selectRwdConfig);
     connect(awdButton, &QPushButton::clicked, this, &SpecViewer::selectAwdConfig);
 
-    configLayout->addWidget(rwdButton);
-    configLayout->addWidget(awdButton);
+    buttonLayout->addWidget(rwdButton);
+    buttonLayout->addWidget(awdButton);
+
+    QLabel* wheelConfigLabel = new QLabel("WHEELS:");
+    wheelConfigLabel->setStyleSheet("color: #888; font-size: 10px; font-weight: bold; text-transform: uppercase; margin-left: 10px;");
+
+    wheelSelector = new QComboBox();
+    wheelSelector->addItem("18\" Eco");
+    wheelSelector->addItem("21\" Perf Staggered");
+    wheelSelector->setCurrentIndex(1); // Default to our new optimal
+    wheelSelector->setStyleSheet("QComboBox { color: white; background-color: #333; }");
+    connect(wheelSelector, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &SpecViewer::onWheelConfigChanged);
+
+    configLayout->addWidget(configLabel);
+    configLayout->addSpacing(5);
+    configLayout->addLayout(buttonLayout);
     configLayout->addStretch();
+    configLayout->addWidget(wheelConfigLabel);
+    configLayout->addSpacing(5);
+    configLayout->addWidget(wheelSelector);
 
     specLayout->addLayout(configLayout);
     selectRwdConfig(); // Set initial state
@@ -721,6 +741,22 @@ void SpecViewer::onDriveModeChanged(int index) {
     sim.setDriveMode(index);
 }
 
+void SpecViewer::onWheelConfigChanged(int index) {
+    sim.setWheelConfig(index);
+    
+    if (index == 0) { // Eco 18"
+        specWheelRadiusLabel->setText("WHEEL_RADIUS: 0.33 m");
+        specDragLabel->setText("DRAG_COEFF: 0.250");
+        specRollResistFrontLabel->setText("ROLL_RESIST_FRONT: 0.0120");
+        specRollResistRearLabel->setText("ROLL_RESIST_REAR: 0.0120");
+    } else { // Staggered 21"
+        specWheelRadiusLabel->setText("WHEEL_RADIUS: 0.36 m");
+        specDragLabel->setText("DRAG_COEFF: 0.255");
+        specRollResistFrontLabel->setText("ROLL_RESIST_FRONT: 0.0080");
+        specRollResistRearLabel->setText("ROLL_RESIST_REAR: 0.0100");
+    }
+}
+
 void SpecViewer::selectRwdConfig() {
     QString rwdStyle = "QPushButton { background-color: #00d1ff; color: black; border: 1px solid #00d1ff; font-weight: bold; padding: 5px; border-top-left-radius: 4px; border-bottom-left-radius: 4px; border-right: none; }"
                        "QPushButton:disabled { background-color: #005566; color: #333; border-color: #005566; }";
@@ -837,12 +873,13 @@ void SpecViewer::updateSimulation() {
     if (throttleSlider->value() != currentSimThrottle) throttleSlider->setValue(currentSimThrottle);
     if (brakeSlider->value() != currentSimBrake)       brakeSlider->setValue(currentSimBrake);
     
-    // Lock Configuration once the EV is turned on. It remains locked until app restart.
-    if (sim.isIgnitionOn() && rwdButton->isEnabled()) {
-        rwdButton->setEnabled(false);
-        awdButton->setEnabled(false);
-        rwdButton->setCursor(Qt::ForbiddenCursor);
-        awdButton->setCursor(Qt::ForbiddenCursor);
+    // Lock Configuration once the vehicle has moved
+    bool hasMoved = sim.getDistanceKm() > 0.001;
+    if (rwdButton->isEnabled() == hasMoved) {
+        rwdButton->setEnabled(!hasMoved);
+        awdButton->setEnabled(!hasMoved);
+        rwdButton->setCursor(hasMoved ? Qt::ForbiddenCursor : Qt::PointingHandCursor);
+        awdButton->setCursor(hasMoved ? Qt::ForbiddenCursor : Qt::PointingHandCursor);
     }
 
     // --- PERFORMANCE OPTIMIZATION: State Caching ---
@@ -998,9 +1035,9 @@ void SpecViewer::updateSimulation() {
         return (a > b) ? a : b;
     };
 
-    coolingRearPTLabel->setText(QString("Rear M/I  : %1").arg(actionToString(getLoopAction(sim.getMotorAction(), sim.getInverterAction()))));
-    coolingFrontPTLabel->setText(QString("Front M/I : %1").arg(actionToString(getLoopAction(sim.getFrontMotorAction(), sim.getFrontInverterAction()))));
-    coolingBatteryLabel->setText(QString("Battery   : %1").arg(actionToString(sim.getBatteryAction())));
+    coolingRearPTLabel->setText(QString("Rear Loop:  %1").arg(actionToString(getLoopAction(sim.getMotorAction(), sim.getInverterAction()))));
+    coolingFrontPTLabel->setText(QString("Front Loop: %1").arg(actionToString(getLoopAction(sim.getFrontMotorAction(), sim.getFrontInverterAction()))));
+    coolingBatteryLabel->setText(QString("Bat Loop:   %1").arg(actionToString(sim.getBatteryAction())));
 }
 
 void SpecViewer::onIgnitionToggled() {

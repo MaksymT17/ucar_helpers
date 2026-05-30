@@ -58,6 +58,7 @@ private slots:
     void onInfotainmentChanged(int value);
     void onDriveModeChanged(int index);
     void onConfigurationChanged(int index);
+    void onWheelConfigChanged(int index);
     void selectRwdConfig();
     void selectAwdConfig();
     void updateSimulation();
@@ -105,6 +106,7 @@ private:
     QComboBox *driveModeSelector;
     QPushButton *rwdButton;
     QPushButton *awdButton;
+    QComboBox *wheelSelector;
 
     QLabel *windLabel;
     QSlider *windSlider;
@@ -134,6 +136,10 @@ private:
     QLabel *specMassLabel;
     QLabel *specTorqueLabel;
     QLabel *specPowerLabel;
+    QLabel *specWheelRadiusLabel;
+    QLabel *specDragLabel;
+    QLabel *specRollResistFrontLabel;
+    QLabel *specRollResistRearLabel;
 
     QGraphicsOpacityEffect *topViewOpacityEffect;
     QPropertyAnimation *topViewFadeAnim;

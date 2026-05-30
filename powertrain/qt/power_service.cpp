@@ -19,16 +19,26 @@ PowerTelemetryDTO PowerDeliveryService::calculatePhysics(const VehicleCommandDTO
     // 1. Environment & Friction Profile
     double airDensity = AIR_PRESSURE_SEA_LEVEL / (SPECIFIC_GAS_CONST_AIR * (inputs.ambientTemp + 273.15));
     
-    double currentRollingResistCoeff = 0.012; // Asphalt
+    double dynamicWheelRadius = 0.33;
+    double front_crr = 0.012; // Asphalt (Eco 235mm)
+    double rear_crr = 0.012;  // Asphalt (Eco 235mm)
     double currentDragCoeffMultiplier = 1.0;
     double mu_friction = 0.85; // Coefficient of friction
 
+    if (inputs.wheelConfig == WheelConfig::STAGGERED_265_21) {
+        dynamicWheelRadius = 0.36; // 21-inch low profile rim
+        front_crr = 0.008; // 235mm front: less rolling resistance
+        rear_crr = 0.010;  // 265mm rear: slightly higher rolling resistance due to width
+        mu_friction = 0.98; // High grip track-capable rubber
+        currentDragCoeffMultiplier = 1.02; // Wider rear tire increases drag slightly
+    }
+
     if (inputs.surfaceType == 1) { // Gravel
-        currentRollingResistCoeff = 0.025;
+        front_crr = rear_crr = 0.025; // Surface dominates rubber width
         currentDragCoeffMultiplier = 1.05;
         mu_friction = 0.45;
     } else if (inputs.surfaceType == 2) { // Ice
-        currentRollingResistCoeff = 0.005;
+        front_crr = rear_crr = 0.005;
         mu_friction = 0.15; // Very low grip
     }
 
@@ -48,11 +58,11 @@ PowerTelemetryDTO PowerDeliveryService::calculatePhysics(const VehicleCommandDTO
     double propulsion_limit = std::max(0.0, available_battery_power * 0.94);
 
     // 3. Virtual Slip Control (TCS) & Torque Vectoring
-    double angular_vel = speed / wheelRadius;
+    double angular_vel = speed / dynamicWheelRadius;
     double motor_rpm = (angular_vel * 60.0 / (2.0 * M_PI)) * 9.04;
     
     double active_max_torque = maxWheelTorque + (inputs.configuration == PowertrainConfig::AWD ? maxFrontWheelTorque : 0.0);
-    double total_avail_torque = (motor_rpm < 5000) ? active_max_torque : std::min(active_max_torque, propulsion_limit / std::max(0.01, speed / wheelRadius));
+    double total_avail_torque = (motor_rpm < 5000) ? active_max_torque : std::min(active_max_torque, propulsion_limit / std::max(0.01, speed / dynamicWheelRadius));
 
     if (motor_rpm > 17800.0) total_avail_torque *= std::max(0.0, (18000.0 - motor_rpm) / 200.0);
 
@@ -63,8 +73,8 @@ PowerTelemetryDTO PowerDeliveryService::calculatePhysics(const VehicleCommandDTO
     double normal_force = mass * 9.81 * std::cos(inputs.gradient * M_PI / 180.0);
     double rear_weight_bias = (inputs.configuration == PowertrainConfig::AWD) ? 0.50 : 0.52;
     
-    double max_grip_torque_rear = (mu_friction * normal_force * rear_weight_bias) * wheelRadius;
-    double max_grip_torque_front = (mu_friction * normal_force * (1.0 - rear_weight_bias)) * wheelRadius;
+    double max_grip_torque_rear = (mu_friction * normal_force * rear_weight_bias) * dynamicWheelRadius;
+    double max_grip_torque_front = (mu_friction * normal_force * (1.0 - rear_weight_bias)) * dynamicWheelRadius;
 
     double rear_engine_torque = std::min({target_engine_torque, maxWheelTorque, max_grip_torque_rear});
     double front_engine_torque = 0.0;
@@ -74,12 +84,14 @@ PowerTelemetryDTO PowerDeliveryService::calculatePhysics(const VehicleCommandDTO
         double unmet_torque = target_engine_torque - rear_engine_torque;
         front_engine_torque = std::min({unmet_torque, maxFrontWheelTorque, max_grip_torque_front});
     }
-    double engine_force = (rear_engine_torque + front_engine_torque) / wheelRadius;
+    double engine_force = (rear_engine_torque + front_engine_torque) / dynamicWheelRadius;
 
     // 4. Resistance & Braking (Regen Vectoring)
     double v_rel = speed - inputs.windSpeed;
     double drag_force = 0.5 * (baseDragCoeff * currentDragCoeffMultiplier) * frontalArea * airDensity * v_rel * std::abs(v_rel);
-    double rolling_force = currentRollingResistCoeff * mass * 9.81;
+    
+    // Split rolling resistance mathematically by weight distribution on the tires
+    double rolling_force = (front_crr * normal_force * (1.0 - rear_weight_bias)) + (rear_crr * normal_force * rear_weight_bias);
     double gradient_force = mass * 9.81 * std::sin(inputs.gradient * M_PI / 180.0);
 
     double active_max_regen = maxRegenTorque + (inputs.configuration == PowertrainConfig::AWD ? maxFrontRegenTorque : 0.0);
@@ -98,7 +110,7 @@ PowerTelemetryDTO PowerDeliveryService::calculatePhysics(const VehicleCommandDTO
     front_regen_torque = std::min(front_regen_torque, max_grip_torque_front);
     rear_regen_torque = std::min(rear_regen_torque, max_grip_torque_rear);
 
-    double regen_force = (rear_regen_torque + front_regen_torque) / wheelRadius;
+    double regen_force = (rear_regen_torque + front_regen_torque) / dynamicWheelRadius;
     double mech_brake_force = std::max(0.0, brake_input - 0.5) / 0.5 * 8.0 * mass;
 
     // 5. Physics Integration
@@ -107,8 +119,8 @@ PowerTelemetryDTO PowerDeliveryService::calculatePhysics(const VehicleCommandDTO
     distance += speed * dt;
 
     // 6. Efficiency & Heat Generation
-    double rear_mech_power = rear_engine_torque * (speed / wheelRadius);
-    double front_mech_power = front_engine_torque * (speed / wheelRadius);
+    double rear_mech_power = rear_engine_torque * (speed / dynamicWheelRadius);
+    double front_mech_power = front_engine_torque * (speed / dynamicWheelRadius);
     double motor_rpm_norm = std::min(motor_rpm / 18000.0, 1.0);
     
     double motor_eff = std::max(0.70, MOTOR_ETA_BASE - (MOTOR_K_COPPER * std::pow(inputs.throttle, 2)) - (MOTOR_K_IRON * motor_rpm_norm));
@@ -122,8 +134,8 @@ PowerTelemetryDTO PowerDeliveryService::calculatePhysics(const VehicleCommandDTO
     double battery_current = electrical_draw / (320.0 + (100.0 * (batteryEnergy / batteryCapacity)));
     state.batteryHeatW = std::pow(battery_current, 2) * 0.042;
 
-    double rear_regen_power = (rear_regen_torque / wheelRadius) * speed;
-    double front_regen_power = (front_regen_torque / wheelRadius) * speed;
+    double rear_regen_power = (rear_regen_torque / dynamicWheelRadius) * speed;
+    double front_regen_power = (front_regen_torque / dynamicWheelRadius) * speed;
     double regen_returned = (rear_regen_power + front_regen_power) * 0.85;
 
     batteryEnergy = std::clamp(batteryEnergy - (electrical_draw * dt) + (regen_returned * dt), 0.0, batteryCapacity);

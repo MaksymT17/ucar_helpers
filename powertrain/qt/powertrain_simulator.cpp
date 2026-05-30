@@ -84,6 +84,7 @@ void EVPowertrainSimulator::update(double dt) {
     cmd.surfaceType = currentSurfaceType;
     cmd.hvAuxLoadW = hv_aux_load;
     cmd.isPrecheckReady = (precheckStatus == PrecheckStatus::Ready);
+    cmd.wheelConfig = wheelConfig;
 
     ThermalTelemetryDTO thermals;
     thermals.emergencyShutdown = emergencyShutdown;
@@ -391,4 +392,9 @@ void EVPowertrainSimulator::setDriveMode(int index) {
 void EVPowertrainSimulator::setConfiguration(int index) {
     configuration = static_cast<PowertrainConfig>(index);
     spdlog::info("Powertrain Configuration set to: {}", (index == 0 ? "RWD" : "AWD"));
+}
+
+void EVPowertrainSimulator::setWheelConfig(int index) {
+    wheelConfig = static_cast<WheelConfig>(index);
+    spdlog::info("Wheel Configuration set to: {}", (index == 0 ? "Eco 18-inch" : "Staggered 21-inch"));
 }

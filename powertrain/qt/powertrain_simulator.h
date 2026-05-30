@@ -19,6 +19,7 @@ public:
     void setWindSpeed(double w) { windSpeed = w; }
     void setDriveMode(int index);
     void setConfiguration(int index);
+    void setWheelConfig(int index);
     void setIgnition(bool on);
 
     // State Getters
@@ -123,6 +124,9 @@ private:
 
     // Powertrain Configuration
     PowertrainConfig configuration = PowertrainConfig::RWD;
+
+    // Wheel Configuration
+    WheelConfig wheelConfig = WheelConfig::STAGGERED_265_21;
 
     // Thermal State
     double windSpeed = 0.0;     // m/s (+ tailwind, - headwind)

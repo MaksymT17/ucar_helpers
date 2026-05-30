@@ -41,7 +41,6 @@ private:
     const double maxRegenTorque = 1800.0;
     const double maxFrontRegenTorque = 1200.0;
     const double maxPower = 210000.0;
-    const double wheelRadius = 0.33;
     const double batteryCapacity = 75.0 * 3600000.0;
     const double nominalVoltage = 400.0;
     const double baseDragCoeff = 0.25;

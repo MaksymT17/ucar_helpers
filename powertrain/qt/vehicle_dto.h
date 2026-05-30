@@ -32,6 +32,11 @@ enum class DriveMode {
     SPORT = 2
 };
 
+enum class WheelConfig {
+    ECO_235_18 = 0,
+    STAGGERED_265_21 = 1
+};
+
 // --------------------------------------------------------------------------
 // DATA TRANSFER OBJECTS (DTOs)
 // In a microservice architecture, these represent the exact JSON/Protobuf 
@@ -51,6 +56,7 @@ struct VehicleCommandDTO {
     int surfaceType = 0; // 0=Asphalt, 1=Gravel, 2=Ice
     double hvAuxLoadW = 0.0;
     bool isPrecheckReady = false;
+    WheelConfig wheelConfig = WheelConfig::STAGGERED_265_21;
 };
 
 // 2. Power & Dynamics Telemetry (From Math Service to Orchestrator/UI)
