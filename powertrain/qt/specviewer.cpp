@@ -86,7 +86,8 @@ SpecViewer::SpecViewer(QWidget *parent) : QMainWindow(parent) {
     // Sync window icon with the global application icon
     setWindowIcon(qApp->windowIcon()); // Use the globally set squircle icon
     
-    setMinimumSize(1150, 900); // Increased width to accommodate extra spacing
+    setMinimumSize(1350, 980); // Increased width and height to accommodate all elements without clipping
+    resize(1350, 980);         // Set initial size
 
     QWidget *centralWidget = new QWidget(this);
     setCentralWidget(centralWidget);
@@ -285,15 +286,41 @@ QVBoxLayout* SpecViewer::setupSpecBox() {
     specBox->setStyleSheet("QGroupBox { border: 1px solid #00d1ff; color: #00d1ff; font-weight: bold; margin-top: 10px; padding-top: 15px; }");
     QVBoxLayout *specLayout = new QVBoxLayout(specBox);
     // Add static specification rows
-    addSpecRow(specLayout, "MASS", "1850 kg");
-    addSpecRow(specLayout, "MAX_WHEEL_TORQUE", "3600 Nm");
-    addSpecRow(specLayout, "MAX_POWER", "210000 W");
+    specMassLabel = addSpecRow(specLayout, "MASS", "1850 kg");
+    specTorqueLabel = addSpecRow(specLayout, "MAX_WHEEL_TORQUE", "3600 Nm");
+    specPowerLabel = addSpecRow(specLayout, "MAX_POWER", "210000 W");
     addSpecRow(specLayout, "BATTERY_CAPACITY", "75.00 kWh");
     addSpecRow(specLayout, "EFFICIENCY", "0.88");
     addSpecRow(specLayout, "WHEEL_RADIUS", "0.33 m");
     addSpecRow(specLayout, "DRAG_COEFF", "0.25");
     addSpecRow(specLayout, "ROLLING_RESIST_COEFF", "0.0120");
     
+    specLayout->addSpacing(10);
+
+    // --- Fancy Configuration Selector ---
+    QLabel* configLabel = new QLabel("CONFIGURATION");
+    configLabel->setStyleSheet("color: #888; font-size: 10px; font-weight: bold; text-transform: uppercase; margin-top: 10px;");
+    specLayout->addWidget(configLabel);
+
+    QHBoxLayout *configLayout = new QHBoxLayout();
+    configLayout->setSpacing(0); // For segmented control look
+
+    rwdButton = new QPushButton("RWD");
+    rwdButton->setCursor(Qt::PointingHandCursor);
+    
+    awdButton = new QPushButton("AWD");
+    awdButton->setCursor(Qt::PointingHandCursor);
+
+    connect(rwdButton, &QPushButton::clicked, this, &SpecViewer::selectRwdConfig);
+    connect(awdButton, &QPushButton::clicked, this, &SpecViewer::selectAwdConfig);
+
+    configLayout->addWidget(rwdButton);
+    configLayout->addWidget(awdButton);
+    configLayout->addStretch();
+
+    specLayout->addLayout(configLayout);
+    selectRwdConfig(); // Set initial state
+
     container->addWidget(specBox);
     return container;
 }
@@ -411,44 +438,64 @@ QVBoxLayout* SpecViewer::setupGradientBox() {
 }
 
 QWidget* SpecViewer::setupVisualThermalDisplay() {
-    QLabel *imgLabel = new QLabel();
+    topViewImageLabel = new QLabel();
+    
+    topViewOpacityEffect = new QGraphicsOpacityEffect(this);
+    topViewImageLabel->setGraphicsEffect(topViewOpacityEffect);
+    topViewOpacityEffect->setOpacity(1.0);
+    topViewFadeAnim = new QPropertyAnimation(topViewOpacityEffect, "opacity", this);
+
     QPixmap topView(":/assets/top_view.png");
     // Load and scale the top-view car image
     if (!topView.isNull()) {
         // Scale to height 702 (base 585 + 20%) for better visibility
         QPixmap scaled = topView.scaledToHeight(702, Qt::SmoothTransformation);
-        imgLabel->setPixmap(scaled);
-        imgLabel->setFixedSize(scaled.size());
+        topViewImageLabel->setPixmap(scaled);
+        topViewImageLabel->setFixedSize(scaled.size());
     } else {
-        imgLabel->setFixedSize(328, 702); // Fallback size
-        imgLabel->setText("[Top View Missing]");
-        imgLabel->setStyleSheet("color: #444; border: 1px dashed #444;");
+        topViewImageLabel->setFixedSize(328, 702); // Fallback size
+        topViewImageLabel->setText("[Top View Missing]");
+        topViewImageLabel->setStyleSheet("color: #444; border: 1px dashed #444;");
     }
-    imgLabel->setAlignment(Qt::AlignCenter);
+    topViewImageLabel->setAlignment(Qt::AlignCenter);
     // Base style for visual temperature labels
     QString style = "font-weight: bold; font-family: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace; font-size: 12px; background-color: rgba(10,10,10,220); border: 1px solid #444; border-radius: 2px; padding: 2px;";
-    // Motor temperature overlay
-    visualMotorTemp = new QLabel("M: 25.0°C", imgLabel);
+    
+    // Rear Motor temperature overlay
+    visualMotorTemp = new QLabel("Mr: 25.0°C", topViewImageLabel);
     visualMotorTemp->setStyleSheet(style + "color: #00ff99;");
     visualMotorTemp->move(145, 150); 
-    // Inverter temperature overlay
-    visualInverterTemp = new QLabel("I: 25.0°C", imgLabel);
+    // Rear Inverter temperature overlay
+    visualInverterTemp = new QLabel("Ir: 25.0°C", topViewImageLabel);
     visualInverterTemp->setStyleSheet(style + "color: #00ff99;");
     visualInverterTemp->move(215, 115); 
     // Battery temperature overlay
-    visualBatteryTemp = new QLabel("BAT: 25.0°C", imgLabel);
+    visualBatteryTemp = new QLabel("BAT: 25.0°C", topViewImageLabel);
     visualBatteryTemp->setStyleSheet(style + "color: #00ff99;");
     visualBatteryTemp->move(140, 335); // Center battery pack (shifted right)
+    
+    // Front Motor temperature overlay
+    visualFrontMotorTemp = new QLabel("Mf: 25.0°C", topViewImageLabel);
+    visualFrontMotorTemp->setStyleSheet(style + "color: #00ff99;");
+    visualFrontMotorTemp->move(145, 560); // Below coolant labels
+    visualFrontMotorTemp->hide(); // Hidden by default (RWD)
+    
+    // Front Inverter temperature overlay
+    visualFrontInverterTemp = new QLabel("If: 25.0°C", topViewImageLabel);
+    visualFrontInverterTemp->setStyleSheet(style + "color: #00ff99;");
+    visualFrontInverterTemp->move(215, 580); // A bit lower than Mf
+    visualFrontInverterTemp->hide();
+
     // Coolant battery loop temperature overlay
-    visualCoolantBatLabel = new QLabel("B-C: 25.0°C", imgLabel);
+    visualCoolantBatLabel = new QLabel("B-C: 25.0°C", topViewImageLabel);
     visualCoolantBatLabel->setStyleSheet(style + "color: #00d1ff;");
-    visualCoolantBatLabel->move(105, 560); // Centered under left reservoir
+    visualCoolantBatLabel->move(105, 520); // Moved up to make room for front drive unit
 
-    visualCoolantMILabel = new QLabel("M/I-C: 25.0°C", imgLabel);
+    visualCoolantMILabel = new QLabel("M/I-C: 25.0°C", topViewImageLabel);
     visualCoolantMILabel->setStyleSheet(style + "color: #00d1ff;");
-    visualCoolantMILabel->move(220, 560); // Centered under right reservoir
+    visualCoolantMILabel->move(220, 520); // Moved up to make room for front drive unit
 
-    return imgLabel;
+    return topViewImageLabel;
 }
 
 QVBoxLayout* SpecViewer::setupSurfaceSelectionBox() {
@@ -566,10 +613,11 @@ QGridLayout* SpecViewer::setupTemperatureBox() {
     return grid;
 }
 
-void SpecViewer::addSpecRow(QVBoxLayout *layout, QString name, QString value) {
+QLabel* SpecViewer::addSpecRow(QVBoxLayout *layout, QString name, QString value) {
     QLabel *label = new QLabel(QString("%1: %2").arg(name).arg(value));
     label->setStyleSheet("color: #888888; font-family: 'Helvetica'; font-size: 13px;");
     layout->addWidget(label); // Add a specification row to the layout
+    return label;
 }
 
 void SpecViewer::onThrottleChanged(int value) {
@@ -660,7 +708,83 @@ void SpecViewer::onInfotainmentChanged(int value) {
 void SpecViewer::onDriveModeChanged(int index) {
     sim.setDriveMode(index);
 }
+
+void SpecViewer::selectRwdConfig() {
+    QString rwdStyle = "background-color: #00d1ff; color: black; border: 1px solid #00d1ff; font-weight: bold; padding: 5px; border-top-left-radius: 4px; border-bottom-left-radius: 4px; border-right: none;";
+    QString awdStyle = "background-color: #222; color: #888; border: 1px solid #444; font-weight: bold; padding: 5px; border-top-right-radius: 4px; border-bottom-right-radius: 4px;";
+    rwdButton->setStyleSheet(rwdStyle);
+    awdButton->setStyleSheet(awdStyle);
+    onConfigurationChanged(0);
+}
+
+void SpecViewer::selectAwdConfig() {
+    QString rwdStyle = "background-color: #222; color: #888; border: 1px solid #444; font-weight: bold; padding: 5px; border-top-left-radius: 4px; border-bottom-left-radius: 4px; border-right: none;";
+    QString awdStyle = "background-color: #00d1ff; color: black; border: 1px solid #00d1ff; font-weight: bold; padding: 5px; border-top-right-radius: 4px; border-bottom-right-radius: 4px;";
+    rwdButton->setStyleSheet(rwdStyle);
+    awdButton->setStyleSheet(awdStyle);
+    onConfigurationChanged(1);
+}
+
 // Helper function to get color based on temperature thresholds
+
+void SpecViewer::onConfigurationChanged(int index) {
+    sim.setConfiguration(index);
+    
+    // Update Top View Image with Smooth Fade Effect
+    QString imgPath = (index == 1) ? ":/assets/top_view_awd.jpg" : ":/assets/top_view.png";
+    
+    topViewFadeAnim->stop(); // Interrupt any currently running transitions safely
+    topViewFadeAnim->disconnect();
+    topViewFadeAnim->setDuration(200); // 200ms Fade Out
+    topViewFadeAnim->setStartValue(topViewOpacityEffect->opacity());
+    topViewFadeAnim->setEndValue(0.0);
+    
+    connect(topViewFadeAnim, &QPropertyAnimation::finished, this, [this, index, imgPath]() {
+        QPixmap topView(imgPath);
+        
+        // Handle UI label visibility mid-fade for the smoothest visual pop
+        if (index == 1) { // AWD Selected
+            visualFrontMotorTemp->show();
+            visualFrontInverterTemp->show();
+        } else {
+            visualFrontMotorTemp->hide();
+            visualFrontInverterTemp->hide();
+        }
+
+        // Fallback to direct absolute path to bypass CMake/QRC caching issues
+        if (topView.isNull()) {
+            QString fallbackPath = (index == 1) ? "/Users/mba23/projects/ucar_helpers/powertrain/top_view_awd.jpg" 
+                                                : "/Users/mba23/projects/ucar_helpers/powertrain/top_view.png";
+            topView.load(fallbackPath);
+        }
+
+        if (!topView.isNull()) {
+            topViewImageLabel->setPixmap(topView.scaledToHeight(702, Qt::SmoothTransformation));
+        } else {
+            spdlog::error("UI Error: Could not load {}. Make sure it is registered in your .qrc file!", imgPath.toStdString());
+            topViewImageLabel->setText("[Image Missing: " + imgPath + "]");
+            topViewImageLabel->setStyleSheet("color: red; border: 1px dashed red;");
+        }
+        topViewFadeAnim->disconnect();
+        topViewFadeAnim->setDuration(200); // 200ms Fade In
+        topViewFadeAnim->setStartValue(0.0);
+        topViewFadeAnim->setEndValue(1.0);
+        topViewFadeAnim->start();
+    });
+    topViewFadeAnim->start();
+
+    // Update Specs depending on the selected configuration
+    if (index == 1) { // AWD Configuration (Adds Front ACIM)
+        specMassLabel->setText("MASS: 1930 kg"); // 1850 + ~80kg approx
+        specTorqueLabel->setText("MAX_WHEEL_TORQUE: 4800 Nm"); // 3600 + 1200 Nm
+        specPowerLabel->setText("MAX_POWER: 270000 W"); // 210kW + 60kW 
+    } else {          // RWD Configuration (Current)
+        specMassLabel->setText("MASS: 1850 kg");
+        specTorqueLabel->setText("MAX_WHEEL_TORQUE: 3600 Nm");
+        specPowerLabel->setText("MAX_POWER: 210000 W");
+    }
+}
+
 QString SpecViewer::getPrecheckStatusString(PrecheckStatus status) {
     switch (status) {
         case PrecheckStatus::Initializing: return "Initializing...";
@@ -777,11 +901,19 @@ void SpecViewer::updateSimulation() {
     // Update Visual Overlays with color-coded temperatures
     QString vStyle = "font-weight: bold; font-family: 'Menlo', 'Monaco', 'Consolas', 'Courier New', monospace; font-size: 12px; background-color: rgba(10,10,10,220); border: 1px solid #444; border-radius: 2px; padding: 2px;";
     
-    visualMotorTemp->setText(QString("M: %1°C").arg(sim.getMotorTemp(), 4, 'f', 1));
+    visualMotorTemp->setText(QString("Mr: %1°C").arg(sim.getMotorTemp(), 4, 'f', 1));
     visualMotorTemp->setStyleSheet(vStyle + getTempColor(sim.getMotorTemp(), 90.0, 140.0));
 
-    visualInverterTemp->setText(QString("I: %1°C").arg(sim.getInverterTemp(), 4, 'f', 1));
+    visualInverterTemp->setText(QString("Ir: %1°C").arg(sim.getInverterTemp(), 4, 'f', 1));
     visualInverterTemp->setStyleSheet(vStyle + getTempColor(sim.getInverterTemp(), 75.0, 120.0));
+
+    if (sim.getConfiguration() == PowertrainConfig::AWD) {
+        visualFrontMotorTemp->setText(QString("Mf: %1°C").arg(sim.getFrontMotorTemp(), 4, 'f', 1));
+        visualFrontMotorTemp->setStyleSheet(vStyle + getTempColor(sim.getFrontMotorTemp(), 90.0, 140.0));
+        
+        visualFrontInverterTemp->setText(QString("If: %1°C").arg(sim.getFrontInverterTemp(), 4, 'f', 1));
+        visualFrontInverterTemp->setStyleSheet(vStyle + getTempColor(sim.getFrontInverterTemp(), 75.0, 120.0));
+    }
 
     visualBatteryTemp->setText(QString("BAT: %1°C").arg(sim.getBatteryTemp(), 4, 'f', 1));
     visualBatteryTemp->setStyleSheet(vStyle + getTempColor(sim.getBatteryTemp(), 45.0, 50.0));

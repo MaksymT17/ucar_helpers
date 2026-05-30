@@ -20,6 +20,11 @@ enum class PrecheckStatus {
     Ready = 5
 };
 
+enum class PowertrainConfig {
+    RWD = 0,
+    AWD = 1
+};
+
 enum class DriveMode {
     ECONOMIC = 0,
     NORMAL = 1,
@@ -39,6 +44,7 @@ public:
     void setAmbientTemp(double t);
     void setWindSpeed(double w) { windSpeed = w; }
     void setDriveMode(int index);
+    void setConfiguration(int index);
     void setIgnition(bool on);
 
     // State Getters
@@ -51,6 +57,10 @@ public:
     double getSOC() const { return (batteryEnergy / batteryCapacity) * 100.0; }
     double getMotorTemp() const { return motorTemp; }
     double getInverterTemp() const { return inverterTemp; }
+    double getFrontMotorTemp() const { return frontMotorTemp; }
+    double getFrontInverterTemp() const { return frontInverterTemp; }
+    CoolingAction getFrontMotorAction() const { return frontMotorAction; }
+    CoolingAction getFrontInverterAction() const { return frontInverterAction; }
     double getBatteryTemp() const { return batteryTemp; }
     double getCoolantPTTemp() const { return coolantPTTemp; }
     double getCoolantBatTemp() const { return coolantBatTemp; }
@@ -59,6 +69,7 @@ public:
     bool isEmergency() const { return emergencyShutdown; }
     bool isDerated() const { return thermalDerate; }
     DriveMode getDriveMode() const { return driveMode; }
+    PowertrainConfig getConfiguration() const { return configuration; }
     bool isIgnitionOn() const { return ignitionOn; }
     double getThrottle() const { return throttle; }
     double getBrake() const { return brake; }
@@ -90,10 +101,12 @@ private:
 
     // Thermal Thresholds (Synced with Python Master Spec)
     static constexpr double MOTOR_OPTIMAL_MAX = 80.0;
+    static constexpr double MOTOR_OPTIMAL_MIN = 40.0;
     static constexpr double MOTOR_NORMAL_MAX  = 90.0;
     static constexpr double MOTOR_CRITICAL    = 140.0;
 
     static constexpr double INV_OPTIMAL_MAX   = 65.0;
+    static constexpr double INV_OPTIMAL_MIN   = 35.0;
     static constexpr double INV_NORMAL_MAX    = 75.0;
     static constexpr double INV_CRITICAL      = 120.0;
 
@@ -153,17 +166,24 @@ private:
     double driveModeLimit = 1.0;
     double modeSwitchTimer = 30.0; // Ready for first change
 
+    // Powertrain Configuration
+    PowertrainConfig configuration = PowertrainConfig::RWD;
+
     // Thermal State
     double windSpeed = 0.0;     // m/s (+ tailwind, - headwind)
     double ambientTemp = 25.0;
     double motorTemp = 25.0;
     double inverterTemp = 25.0;
+    double frontMotorTemp = 25.0;
+    double frontInverterTemp = 25.0;
     double batteryTemp = 25.0;
     double coolantPTTemp = 25.0;
     double coolantBatTemp = 25.0;
 
     CoolingAction motorAction = CoolingAction::TURNED_OFF;
     CoolingAction inverterAction = CoolingAction::TURNED_OFF;
+    CoolingAction frontMotorAction = CoolingAction::TURNED_OFF;
+    CoolingAction frontInverterAction = CoolingAction::TURNED_OFF;
     CoolingAction batteryAction = CoolingAction::TURNED_OFF;
     double coolingPollTimer = 0.0;
     PrecheckStatus precheckStatus = PrecheckStatus::Initializing;
@@ -191,11 +211,14 @@ private:
     const double DCDC_MAX_POWER = 1500.0; // 1.5kW DC-DC Converter
     static constexpr double SYSTEM_BASE_LOAD = 250.0; // Computers, sensors, etc.
 
-    void updateDeviceCooling(double temp, double optimalMax, double normalMax, CoolingAction &action);
+    void updateDeviceCooling(double temp, double optimalMin, double optimalMax, double normalMax, CoolingAction &action);
 
     // Constants (Synced with Python Master Spec)
     const double mass = 1850.0;
     const double maxWheelTorque = 3600.0;
+    const double maxFrontWheelTorque = 1200.0;
+    const double maxRegenTorque = 1800.0;
+    const double maxFrontRegenTorque = 1200.0;
     const double maxPower = 210000.0;
     const double wheelRadius = 0.33;
     const double batteryCapacity = 75.0 * 3600000.0;
@@ -213,6 +236,8 @@ private:
     const double motorThermalMass = 22000.0;
     const double batteryThermalMass = 309000.0;
     const double inverterThermalMass = 3400.0;
+    const double frontMotorThermalMass = 15000.0;
+    const double frontInverterThermalMass = 2500.0;
 
     void updateBatteryThermalManagement();
     void updatePTThermalManagement();

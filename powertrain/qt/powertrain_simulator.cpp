@@ -106,16 +106,25 @@ void EVPowertrainSimulator::update(double dt) {
     double angular_vel = speed / wheelRadius;
     double motor_rpm = (angular_vel * 60.0 / (2.0 * M_PI)) * 9.04;
     
-    double max_avail_torque = (motor_rpm < 5000) ?
-        maxWheelTorque : std::min(maxWheelTorque, propulsion_limit / std::max(0.01, speed / wheelRadius));
-    
+    double active_max_torque = maxWheelTorque + (configuration == PowertrainConfig::AWD ? maxFrontWheelTorque : 0.0);
+    double active_max_regen = maxRegenTorque + (configuration == PowertrainConfig::AWD ? maxFrontRegenTorque : 0.0);
+
+    double total_avail_torque = (motor_rpm < 5000) ?
+        active_max_torque : std::min(active_max_torque, propulsion_limit / std::max(0.01, speed / wheelRadius));
+
     // 1a. RPM Safety Limiter (Tesla RDU structural limit at 18,000 RPM)
     if (motor_rpm > 17800.0) {
         double rpm_limit_factor = std::max(0.0, (18000.0 - motor_rpm) / 200.0);
-        max_avail_torque *= rpm_limit_factor;
+        total_avail_torque *= rpm_limit_factor;
     }
 
-    double engine_force = (throttle * powerLimit * max_avail_torque) / wheelRadius;
+    // Torque Vectoring: Rear handles heavy lifting, Front assists at high demand
+    double target_engine_torque = throttle * powerLimit * total_avail_torque;
+    double rear_engine_torque = std::min(target_engine_torque, maxWheelTorque);
+    double front_engine_torque = std::max(0.0, target_engine_torque - rear_engine_torque);
+    if (configuration == PowertrainConfig::RWD) front_engine_torque = 0.0;
+
+    double engine_force = (rear_engine_torque + front_engine_torque) / wheelRadius;
 
     // 2. Resistance Forces
     // Relative velocity determines drag: +windSpeed is a tailwind (reduces relative velocity)
@@ -126,8 +135,19 @@ void EVPowertrainSimulator::update(double dt) {
     double gradient_force = mass * 9.81 * std::sin(gradient * M_PI / 180.0);
 
     // 3. Braking Logic
-    double regen_torque = std::min(brake, 0.5) / 0.5 * 1800.0;
-    double regen_force = regen_torque / wheelRadius;
+    double target_regen_torque = std::min(brake, 0.5) / 0.5 * active_max_regen;
+    double front_regen_torque = 0.0;
+    double rear_regen_torque = 0.0;
+
+    if (configuration == PowertrainConfig::AWD) {
+        // Regen Vectoring: Front motor takes priority for recuperation to maintain dynamic stability
+        front_regen_torque = std::min(target_regen_torque, maxFrontRegenTorque);
+        rear_regen_torque = std::max(0.0, target_regen_torque - front_regen_torque);
+    } else {
+        rear_regen_torque = target_regen_torque;
+    }
+
+    double regen_force = (rear_regen_torque + front_regen_torque) / wheelRadius;
     double mech_brake_force = std::max(0.0, brake - 0.5) / 0.5 * 8.0 * mass;
 
     double net_force = engine_force - drag_force - rolling_force - regen_force - mech_brake_force - gradient_force;
@@ -144,7 +164,9 @@ void EVPowertrainSimulator::update(double dt) {
     }
 
     // 5. Energy Consumption
-    double mech_power = (throttle * powerLimit * max_avail_torque) * (speed / wheelRadius);
+    double rear_mech_power = rear_engine_torque * (speed / wheelRadius);
+    double front_mech_power = front_engine_torque * (speed / wheelRadius);
+    double mech_power = rear_mech_power + front_mech_power;
     double speed_kmh = speed * 3.6;    
 
     // Simple Voltage-Drop Model based on SOC
@@ -157,15 +179,23 @@ void EVPowertrainSimulator::update(double dt) {
     double motor_eff = std::max(0.70, MOTOR_ETA_BASE - (MOTOR_K_COPPER * std::pow(throttle, 2)) - (MOTOR_K_IRON * motor_rpm_norm));
     double inv_eff = std::max(0.85, INV_ETA_BASE - (INV_K_SWITCH * throttle));
 
-    // Total electrical draw: mech_power corrected by inverter/motor efficiency + cabin aux
-    double electrical_draw = (mech_power / (motor_eff * inv_eff)) + hv_aux_load;
+    double front_motor_eff = motor_eff; // Simulating similar induction/PMSM curve
+    double front_inv_eff = inv_eff;
+
+    // Total electrical draw: mech_power corrected by inverter/motor efficiencies + cabin aux
+    double electrical_draw = (rear_mech_power / (motor_eff * inv_eff)) + hv_aux_load;
+    if (configuration == PowertrainConfig::AWD && front_mech_power > 0) {
+        electrical_draw += (front_mech_power / (front_motor_eff * front_inv_eff));
+    }
 
     // Battery Heat based on current (I = P/V)
     double battery_current = electrical_draw / current_voltage;
     // Joule Heating: Q = I^2 * R. Internal Resistance roughly 0.042 Ohms.
     double battery_heat = std::pow(battery_current, 2) * 0.042;
 
-    double regen_power = regen_force * speed;
+    double rear_regen_power = (rear_regen_torque / wheelRadius) * speed;
+    double front_regen_power = (front_regen_torque / wheelRadius) * speed;
+    double regen_power = rear_regen_power + front_regen_power;
     double regen_returned = regen_power * 0.85;
 
     batteryEnergy -= electrical_draw * dt;
@@ -190,8 +220,15 @@ void EVPowertrainSimulator::update(double dt) {
 
     // 6. Thermal Modeling
     // Heat is generated by losses in the conversion
-    double motor_heat = (std::abs(mech_power) + std::abs(regen_power)) * (1.0 - motor_eff);
-    double inv_heat = (std::abs(mech_power) + std::abs(regen_power)) * (1.0 - inv_eff);
+    double motor_heat = (std::abs(rear_mech_power) + std::abs(rear_regen_power)) * (1.0 - motor_eff);
+    double inv_heat = (std::abs(rear_mech_power) + std::abs(rear_regen_power)) * (1.0 - inv_eff);
+    
+    double front_motor_heat = 0.0;
+    double front_inv_heat = 0.0;
+    if (configuration == PowertrainConfig::AWD) {
+        front_motor_heat = (std::abs(front_mech_power) + std::abs(front_regen_power)) * (1.0 - front_motor_eff);
+        front_inv_heat = (std::abs(front_mech_power) + std::abs(front_regen_power)) * (1.0 - front_inv_eff);
+    }
 
     auto calculateDissipation = [&](double temp, double refCoolantTemp, CoolingAction action, double& heatToCoolant) {
         double q_air_base = NATURAL_CONVECTION * (temp - ambientTemp);
@@ -210,7 +247,7 @@ void EVPowertrainSimulator::update(double dt) {
                 default: break;
             }
             double q_liq = h_liq * (temp - refCoolantTemp);
-            heatToCoolant = std::max(0.0, q_liq); // Only positive transfer heats the coolant loop
+            heatToCoolant = q_liq; // Allow bidirectional heat transfer to warm components
             return q_air_base + q_liq;
         } else {
             return q_air_base;
@@ -218,9 +255,22 @@ void EVPowertrainSimulator::update(double dt) {
     };
 
     double mToPT, iToPT, bToBat;
+    double fMToPT = 0.0, fIToPT = 0.0;
     double mDiss = calculateDissipation(motorTemp, coolantPTTemp, motorAction, mToPT);
     double iDiss = calculateDissipation(inverterTemp, coolantPTTemp, inverterAction, iToPT);
     double bDiss = calculateDissipation(batteryTemp, coolantBatTemp, batteryAction, bToBat);
+
+    if (configuration == PowertrainConfig::AWD) {
+        double fmDiss = calculateDissipation(frontMotorTemp, coolantPTTemp, frontMotorAction, fMToPT);
+        double fiDiss = calculateDissipation(frontInverterTemp, coolantPTTemp, frontInverterAction, fIToPT);
+        frontMotorTemp += ((front_motor_heat - fmDiss) * dt) / frontMotorThermalMass;
+        frontInverterTemp += ((front_inv_heat - fiDiss) * dt) / frontInverterThermalMass;
+    } else {
+        double fmDiss = calculateDissipation(frontMotorTemp, ambientTemp, CoolingAction::TURNED_OFF, fMToPT);
+        double fiDiss = calculateDissipation(frontInverterTemp, ambientTemp, CoolingAction::TURNED_OFF, fIToPT);
+        frontMotorTemp += (-fmDiss * dt) / frontMotorThermalMass;
+        frontInverterTemp += (-fiDiss * dt) / frontInverterThermalMass;
+    }
 
     motorTemp += ((motor_heat - mDiss) * dt) / motorThermalMass;
     inverterTemp += ((inv_heat - iDiss) * dt) / inverterThermalMass;
@@ -233,17 +283,17 @@ void EVPowertrainSimulator::update(double dt) {
     // Dynamic Fan Rejection (Hardware Logic: PT=2 fans, BAT=1 fan)
     // PT Loop: Escalate from 1 fan to 2 fans based on demand
     double pt_fan_boost = 0.0;
-    if (motorAction == CoolingAction::LIQUID_HIGH || inverterAction == CoolingAction::LIQUID_HIGH)
+    if (motorAction == CoolingAction::LIQUID_HIGH || inverterAction == CoolingAction::LIQUID_HIGH || frontMotorAction == CoolingAction::LIQUID_HIGH || frontInverterAction == CoolingAction::LIQUID_HIGH)
         pt_fan_boost = 120.0; // Both fans at max
-    else if (motorAction >= CoolingAction::LIQUID_LOW || inverterAction >= CoolingAction::LIQUID_LOW)
+    else if (motorAction >= CoolingAction::LIQUID_LOW || inverterAction >= CoolingAction::LIQUID_LOW || frontMotorAction >= CoolingAction::LIQUID_LOW || frontInverterAction >= CoolingAction::LIQUID_LOW)
         pt_fan_boost = 50.0;  // Single fan or low-duty cycle
 
     // Bat Loop: Single auxiliary fan
     double bat_fan_boost = (batteryAction >= CoolingAction::LIQUID_LOW) ? 60.0 : 0.0;
     
-    // Powertrain Loop (Motor + Inverter)
+    // Powertrain Loop (Motor + Inverter + Front unit if AWD)
     double pt_rad_diss = (COOLANT_PT_RAD_H + pt_fan_boost + h_ram_boost) * (coolantPTTemp - ambientTemp);
-    coolantPTTemp += ((mToPT + iToPT - pt_rad_diss) * dt) / COOLANT_PT_MASS;
+    coolantPTTemp += ((mToPT + iToPT + fMToPT + fIToPT - pt_rad_diss) * dt) / COOLANT_PT_MASS;
 
     // Battery Loop
     double heat_from_battery_heater = batteryHeaterOn ? batteryHeaterPowerDraw : 0.0; // Heater directly adds heat to coolant
@@ -267,22 +317,40 @@ void EVPowertrainSimulator::update(double dt) {
     coolingPollTimer += dt;
     if (coolingPollTimer >= 5.0) {
         coolingPollTimer = 0.0;
-        updateDeviceCooling(motorTemp, MOTOR_OPTIMAL_MAX, MOTOR_NORMAL_MAX, motorAction);
-        updateDeviceCooling(inverterTemp, INV_OPTIMAL_MAX, INV_NORMAL_MAX, inverterAction);
-        updateDeviceCooling(batteryTemp, BAT_OPTIMAL_MAX, BAT_NORMAL_MAX, batteryAction);
+        updateDeviceCooling(motorTemp, MOTOR_OPTIMAL_MIN, MOTOR_OPTIMAL_MAX, MOTOR_NORMAL_MAX, motorAction);
+        updateDeviceCooling(inverterTemp, INV_OPTIMAL_MIN, INV_OPTIMAL_MAX, INV_NORMAL_MAX, inverterAction);
+        updateDeviceCooling(batteryTemp, BAT_OPTIMAL_MIN, BAT_OPTIMAL_MAX, BAT_NORMAL_MAX, batteryAction);
+
+        if (configuration == PowertrainConfig::AWD) {
+            updateDeviceCooling(frontMotorTemp, MOTOR_OPTIMAL_MIN, MOTOR_OPTIMAL_MAX, MOTOR_NORMAL_MAX, frontMotorAction);
+            updateDeviceCooling(frontInverterTemp, INV_OPTIMAL_MIN, INV_OPTIMAL_MAX, INV_NORMAL_MAX, frontInverterAction);
+        } else {
+            frontMotorAction = CoolingAction::TURNED_OFF;
+            frontInverterAction = CoolingAction::TURNED_OFF;
+        }
 
         // Emergency if too hot OR too cold
         bool wantsEmergency = (motorTemp > MOTOR_CRITICAL || motorTemp < MOTOR_COLD_LIMIT || // Motor too hot or too cold
                                inverterTemp > INV_CRITICAL || inverterTemp < INV_COLD_LIMIT || // Inverter too hot or too cold
                                batteryTemp > BAT_CRITICAL || batteryTemp < BAT_COLD_LIMIT);   // Battery too hot or too cold
         
+        if (configuration == PowertrainConfig::AWD) {
+            wantsEmergency |= (frontMotorTemp > MOTOR_CRITICAL || frontMotorTemp < MOTOR_COLD_LIMIT || 
+                               frontInverterTemp > INV_CRITICAL || frontInverterTemp < INV_COLD_LIMIT);
+        }
+
         if (wantsEmergency && !emergencyShutdown) { // Only log on transition to emergency
             if (motorTemp > MOTOR_CRITICAL) spdlog::critical("Emergency Shutdown: Motor Overheat ({} C)", motorTemp);
             if (inverterTemp > INV_CRITICAL) spdlog::critical("Emergency Shutdown: Inverter Overheat ({} C)", inverterTemp);
             if (batteryTemp > BAT_CRITICAL) spdlog::critical("Emergency Shutdown: Battery Overheat ({} C)", batteryTemp);
+            if (frontMotorTemp > MOTOR_CRITICAL) spdlog::critical("Emergency Shutdown: Front Motor Overheat ({} C)", frontMotorTemp);
+            if (frontInverterTemp > INV_CRITICAL) spdlog::critical("Emergency Shutdown: Front Inverter Overheat ({} C)", frontInverterTemp);
         }
 
         bool wantsDerate = (motorTemp > MOTOR_NORMAL_MAX || inverterTemp > INV_NORMAL_MAX || batteryTemp > BAT_NORMAL_MAX);
+        if (configuration == PowertrainConfig::AWD) {
+            wantsDerate |= (frontMotorTemp > MOTOR_NORMAL_MAX || frontInverterTemp > INV_NORMAL_MAX);
+        }
 
         if (wantsDerate && !thermalDerate && !wantsEmergency) {
             QString derateReason;
@@ -295,6 +363,9 @@ void EVPowertrainSimulator::update(double dt) {
             if (batteryTemp > BAT_NORMAL_MAX) {
                 derateReason += QString::asprintf("Battery (%.1f°C) ", batteryTemp);
             }
+            if (frontMotorTemp > MOTOR_NORMAL_MAX) derateReason += QString::asprintf("Front Motor (%.1f°C) ", frontMotorTemp);
+            if (frontInverterTemp > INV_NORMAL_MAX) derateReason += QString::asprintf("Front Inverter (%.1f°C) ", frontInverterTemp);
+            
             spdlog::warn("Thermal Derate Active: System exceeding normal operating thresholds. Affected units: {}", derateReason.toStdString());
         }
 
@@ -316,12 +387,15 @@ void EVPowertrainSimulator::update(double dt) {
     }
 }
 
-void EVPowertrainSimulator::updateDeviceCooling(double temp, double optimalMax, double normalMax, CoolingAction &action) {
-    if (temp <= optimalMax) {
+void EVPowertrainSimulator::updateDeviceCooling(double temp, double optimalMin, double optimalMax, double normalMax, CoolingAction &action) {
+    if (temp < optimalMin) {
+        action = CoolingAction::LIQUID_WARM; // Active heating circulation
+    } else if (temp <= optimalMax) {
         // De-escalate cooling toward TURNED_OFF
         if (action == CoolingAction::LIQUID_HIGH)      action = CoolingAction::LIQUID_MED;
         else if (action == CoolingAction::LIQUID_MED)  action = CoolingAction::LIQUID_LOW;
-        else                                           action = CoolingAction::TURNED_OFF;
+        else if (action == CoolingAction::LIQUID_WARM && temp >= optimalMin + 2.0) action = CoolingAction::TURNED_OFF; // Hysteresis
+        else if (action != CoolingAction::LIQUID_WARM) action = CoolingAction::TURNED_OFF;
     } else if (temp <= normalMax) {
         // Maintain LIQUID_LOW if already cooling, otherwise allow passive soak
         if (action > CoolingAction::LIQUID_LOW) {
@@ -414,6 +488,8 @@ void EVPowertrainSimulator::setAmbientTemp(double t) {
     if (speed < 0.1 && distance < 0.001) {
         motorTemp = t;
         inverterTemp = t;
+            frontMotorTemp = t;
+            frontInverterTemp = t;
         batteryTemp = t;
         coolantPTTemp = t;
         coolantBatTemp = t;
@@ -458,4 +534,9 @@ void EVPowertrainSimulator::setDriveMode(int index) {
         case DriveMode::SPORT:    driveModeLimit = 1.0; break;
     }
     // Slew rate limiter will smoothly transition to this new driveModeLimit
+}
+
+void EVPowertrainSimulator::setConfiguration(int index) {
+    configuration = static_cast<PowertrainConfig>(index);
+    spdlog::info("Powertrain Configuration set to: {}", (index == 0 ? "RWD" : "AWD"));
 }

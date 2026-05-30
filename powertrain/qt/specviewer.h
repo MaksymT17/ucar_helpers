@@ -14,6 +14,8 @@
 #include <QPainter>
 #include <QTimer>
 #include <QPushButton>
+#include <QGraphicsOpacityEffect>
+#include <QPropertyAnimation>
 
 class WindFlowWidget : public QWidget {
     Q_OBJECT
@@ -55,6 +57,9 @@ private slots:
     void onACTempChanged(int value);
     void onInfotainmentChanged(int value);
     void onDriveModeChanged(int index);
+    void onConfigurationChanged(int index);
+    void selectRwdConfig();
+    void selectAwdConfig();
     void updateSimulation();
     void onIgnitionToggled();
 private:
@@ -98,6 +103,8 @@ private:
     QSlider *gradientSlider;
     QComboBox *surfaceSelector;
     QComboBox *driveModeSelector;
+    QPushButton *rwdButton;
+    QPushButton *awdButton;
 
     QLabel *windLabel;
     QSlider *windSlider;
@@ -113,14 +120,24 @@ private:
     QLabel *coolingInverterLabel;
     QLabel *coolingBatteryLabel;
 
+    QLabel *topViewImageLabel;
     QLabel *visualMotorTemp;
     QLabel *visualInverterTemp;
+    QLabel *visualFrontMotorTemp;
+    QLabel *visualFrontInverterTemp;
     QLabel *visualBatteryTemp;
     QLabel *visualCoolantMILabel;
     QLabel *visualCoolantBatLabel;
 
+    QLabel *specMassLabel;
+    QLabel *specTorqueLabel;
+    QLabel *specPowerLabel;
+
+    QGraphicsOpacityEffect *topViewOpacityEffect;
+    QPropertyAnimation *topViewFadeAnim;
+
     QString getPrecheckStatusString(PrecheckStatus status);
-    void addSpecRow(QVBoxLayout *layout, QString name, QString value);
+    QLabel* addSpecRow(QVBoxLayout *layout, QString name, QString value);
     QString getTempColor(double t, double normalMax, double emergencyMax);
 };
 #endif
