@@ -1,0 +1,50 @@
+================================================================================
+HARDWARE SPECIFICATION & SOURCING BLUEPRINT: POWERTRAIN DRIVE UNITS
+Version: 0.1 (Draft)
+Classification: Hardware / Tier-1 Sourcing
+================================================================================
+
+1. OVERVIEW: ASYMMETRIC AWD TOPOLOGY
+--------------------------------------------------------------------------------
+The Alpha EV prototype utilizes a strictly asymmetric dual-motor architecture. 
+By intentionally pairing two distinct electromagnetic technologies (PMSM + ACIM), 
+the vehicle maximizes highway cruising efficiency while enabling high-bias, 
+forward-shifted kinetic recuperation and zero-drag freewheeling.
+
+2. REAR AXLE: PRIMARY PROPULSION
+--------------------------------------------------------------------------------
+Role: Primary drive for all steady-state cruising and baseline acceleration.
+Technology: Permanent Magnet Synchronous Motor (PMSM).
+Voltage Architecture: 400V DC Nominal.
+Target Peak Output: ~210 kW / 3,600 Nm (at wheels).
+Inverter Tech: Silicon Carbide (SiC) MOSFETs for >98% switching efficiency.
+
+* Phase 1 (Alpha Prototype):
+  Salvaged/Remanufactured Tesla Model 3 Rear Drive Unit (RDU).
+  Controlled via 3rd-party VCU (e.g., AEM VCU300) or OpenInverter logic board.
+
+* Phase 2 (Production Target):
+  Bosch High-Performance PMSM eAxle.
+
+3. FRONT AXLE: SECONDARY PROPULSION & RECUPERATION
+--------------------------------------------------------------------------------
+Role: On-demand torque vectoring, primary kinetic recuperation, zero-drag idle.
+Technology: AC Induction Motor (ACIM) / Asynchronous Machine (ASM).
+Voltage Architecture: 400V DC Nominal.
+Target Peak Output: ~60 kW / 1,200 Nm (at wheels).
+Inverter Tech: Standard IGBT or SiC (depending on thermal/cost constraints).
+
+* Phase 1 (Alpha Prototype):
+  Salvaged/Remanufactured Tesla Model 3 Front Drive Unit (Induction).
+  Selected specifically for its lack of permanent magnets (zero cogging).
+
+* Phase 2 (Production Target):
+  Bosch Secondary Drive eAxle (ASM or EESM).
+
+4. CONTROL & INTEGRATION REQUIREMENTS (TIER-1 SUPPLIERS)
+--------------------------------------------------------------------------------
+- The inverter controller MUST expose a high-frequency, low-latency API (CAN-FD 
+  or Automotive Ethernet).
+- Must support >1000 Hz torque command polling.
+- Internal resolver telemetry must bypass proprietary middleware to allow our 
+  Supervisory ECU to execute sub-millisecond Virtual Slip Control (VSC).
