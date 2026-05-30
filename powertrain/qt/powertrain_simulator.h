@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include "vehicle_dto.h"
+#include "power_service.h"
 
 class EVPowertrainSimulator {
 public:
@@ -21,13 +22,13 @@ public:
     void setIgnition(bool on);
 
     // State Getters
-    double getSpeedKmh() const { return speed * 3.6; }
-    double getBatteryKwh() const { return batteryEnergy / 3600000.0; }
-    double getDistanceKm() const { return distance / 1000.0; }
-    double getTripTime() const { return tripTime; }
-    double getPowerKw() const { return lastPowerKw; }
-    double getEfficiency() const { return lastEfficiencyKwh100; }
-    double getSOC() const { return (batteryEnergy / batteryCapacity) * 100.0; }
+    double getSpeedKmh() const { return powerState.speedKmh; }
+    double getBatteryKwh() const { return powerState.batteryKwh; }
+    double getDistanceKm() const { return powerState.distanceKm; }
+    double getTripTime() const { return powerState.tripTime; }
+    double getPowerKw() const { return powerState.currentPowerKw; }
+    double getEfficiency() const { return powerState.efficiencyKwh100; }
+    double getSOC() const { return (powerState.batteryKwh / 75.0) * 100.0; }
     double getMotorTemp() const { return motorTemp; }
     double getInverterTemp() const { return inverterTemp; }
     double getFrontMotorTemp() const { return frontMotorTemp; }
@@ -63,14 +64,13 @@ public:
     CoolingAction getBatteryAction() const { return batteryAction; }
 
 private:
-    double speed = 0.0;         // m/s
-    double batteryEnergy;       // Joules
+    // Microservices
+    PowerDeliveryService powerService;
+    PowerTelemetryDTO powerState;
+
     double throttle = 0.0;      // 0.0 to 1.0
     double brake = 0.0;         // 0.0 to 1.0
     double gradient = 0.0;      // degrees
-    double distance = 0.0;      // meters
-    double tripTime = 0.0;      // seconds
-    double lastPowerKw = 0.0;
 
     // Thermal Thresholds (Synced with Python Master Spec)
     static constexpr double MOTOR_OPTIMAL_MAX = 80.0;
@@ -110,25 +110,7 @@ private:
     static constexpr double COOLANT_PT_MASS       = 33700.0;
     static constexpr double COOLANT_BAT_MASS      = 22400.0;
 
-    // Environment & Physics
-    static constexpr double AIR_PRESSURE_SEA_LEVEL = 101325.0;
-    static constexpr double SPECIFIC_GAS_CONST_AIR = 287.05;
-    static constexpr double FRONTAL_AREA           = 2.2;
-
-    // Efficiency Coefficients (Tesla RDU Baseline)
-    static constexpr double MOTOR_ETA_BASE = 0.95;
-    static constexpr double MOTOR_K_COPPER = 0.08;
-    static constexpr double MOTOR_K_IRON   = 0.04;
-    static constexpr double INV_ETA_BASE   = 0.98;
-    static constexpr double INV_K_SWITCH   = 0.03;
-
-    double lastEfficiencyKwh100 = 0.0;
-    double effPowerSum = 0.0;
-    double effSpeedSum = 0.0;
-    int effTicks = 0;
-
-    double currentRollingResistCoeff;
-    double currentDragCoeffMultiplier;
+    int currentSurfaceType = 0;
 
     bool emergencyShutdown = false;
     bool thermalDerate = false;
@@ -185,25 +167,6 @@ private:
     static constexpr double SYSTEM_BASE_LOAD = 250.0; // Computers, sensors, etc.
 
     void updateDeviceCooling(double temp, double optimalMin, double optimalMax, double normalMax, CoolingAction &action);
-
-    // Constants (Synced with Python Master Spec)
-    const double mass = 1850.0;
-    const double maxWheelTorque = 3600.0;
-    const double maxFrontWheelTorque = 1200.0;
-    const double maxRegenTorque = 1800.0;
-    const double maxFrontRegenTorque = 1200.0;
-    const double maxPower = 210000.0;
-    const double wheelRadius = 0.33;
-    const double batteryCapacity = 75.0 * 3600000.0;
-    const double nominalVoltage = 400.0; // Nominal pack voltage
-    const double baseDragCoeff = 0.25; // Base drag coefficient
-
-    // Surface Coefficients
-    const double ASPHALT_ROLLING_RESIST_COEFF = 0.012;
-    const double ASPHALT_DRAG_COEFF_MULTIPLIER = 1.0;
-    const double GRAVEL_ROLLING_RESIST_COEFF = 0.025;
-    const double GRAVEL_DRAG_COEFF_MULTIPLIER = 1.05;
-    const double ICE_ROLLING_RESIST_COEFF = 0.005;
 
     // Thermal Constants
     const double motorThermalMass = 22000.0;

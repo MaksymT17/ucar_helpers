@@ -48,6 +48,9 @@ struct VehicleCommandDTO {
     DriveMode driveMode = DriveMode::SPORT;
     double ambientTemp = 25.0;
     double windSpeed = 0.0;
+    int surfaceType = 0; // 0=Asphalt, 1=Gravel, 2=Ice
+    double hvAuxLoadW = 0.0;
+    bool isPrecheckReady = false;
 };
 
 // 2. Power & Dynamics Telemetry (From Math Service to Orchestrator/UI)

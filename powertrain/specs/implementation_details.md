@@ -6,10 +6,10 @@ This document summarizes the technical architecture and logic for the EV Powertr
 The project evolved from a Python/Tkinter prototype to a high-performance C++/Qt6 application.
 
 - **Python Version**: Research prototype using `threading` for a 20Hz physics loop.
-- **C++ Version**: Production core using `EVPowertrainSimulator`. It models the full **Powertrain** (Battery -> Inverter -> Motor) and the resulting **Drivetrain** forces.
+- **C++ Version**: Production core transitioning to a Service-Oriented Architecture (SOA). The orchestrator (`EVPowertrainSimulator`) communicates with isolated microservices (e.g., `PowerDeliveryService`) strictly via Data Transfer Objects (DTOs).
 
-## 2. Physics Engine (`EVPowertrainSimulator`)
-The simulation calculates real-time dynamics based on a Tesla Model 3 RWD reference.
+## 2. Physics Engine (`PowerDeliveryService`)
+The isolated math engine calculates real-time dynamics for both RWD and Asymmetric AWD topologies.
 
 ### Propulsion & Energy Flow
 - **Energy Path**: Battery DC -> Inverter AC -> Motor Torque -> Drivetrain Gear Reduction -> Wheel Force.
@@ -24,6 +24,12 @@ The simulation calculates real-time dynamics based on a Tesla Model 3 RWD refere
   - `0.0` (Emergency Shutdown)
 - **Structural RPM Limiter**: Hard safety ceiling at `18,000 RPM` (Tesla RDU limit), preventing the vehicle from exceeding ~247 km/h with a 9.04:1 gear ratio.
 - **Braking**: 0.0 to 0.5 pedal range handles regenerative braking (`1800 Nm` peak); 0.5 to 1.0 adds mechanical disk brakes (`8.0 m/s²` deceleration).
+
+### Vehicle Dynamics & Virtual Slip Control (VSC)
+- **Resolver-Based Traction**: Simulates sub-millisecond inverter response times, completely bypassing legacy mechanical ABS tone-ring latency.
+- **Friction Modeling**: Calculates absolute maximum transferable wheel torque based on dynamic normal force, gradient, and Surface Friction Coefficients (Asphalt: ~0.85, Gravel: ~0.45, Ice: ~0.15).
+- **Torque Vectoring**: Instantly shifts unmet torque demands from a slipping rear axle (PMSM) to the front axle (ACIM) during launch or low-traction events.
+- **Regen Slip Protection**: Dynamically clamps regenerative negative torque on ice to prevent axle lock-up and maintain yaw stability.
 
 ### Resistance Forces
 - **Dynamic Air Density**: Calculated via the Ideal Gas Law (`P / (R*T)`) based on ambient temperature. Cold air increases drag and energy consumption realistically.
@@ -40,6 +46,7 @@ A three-mass thermal system with two independent cooling loops.
 - **Inverter**: 3,400 J/°C
 
 ### Cooling Logic (`CoolingAction` enum)
+- **Independent Loops**: Accurately models separate coolant circuits for the Battery, Rear Drive Unit, and Front Drive Unit, with independent dynamic PWM pump speeds governed by the hottest component in each loop.
 - Polled every **5 seconds** to maintain stability.
 - **Escalation**: TURNED_OFF -> ACTIVE_FAN -> LIQUID_COLD.
 - **Thermal Derate**: Triggered if any component exceeds `normal_max` (Motor 90°C, Inv 75°C, Bat 45°C).

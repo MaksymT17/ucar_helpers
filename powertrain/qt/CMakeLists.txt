@@ -12,12 +12,10 @@ find_package(spdlog REQUIRED)
 
 add_executable(EVSimulationQt
     main.cpp
-    specviewer.h
     specviewer.cpp
-    powertrain_simulator.h
     powertrain_simulator.cpp
-    powergraph.h
     powergraph.cpp
+    power_service.cpp
     assets.qrc
 )
 

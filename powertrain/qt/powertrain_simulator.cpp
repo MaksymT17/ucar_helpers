@@ -4,15 +4,14 @@
 #include <QString>
 
 EVPowertrainSimulator::EVPowertrainSimulator() {
-    batteryEnergy = batteryCapacity;
-    currentRollingResistCoeff = ASPHALT_ROLLING_RESIST_COEFF;
-    currentDragCoeffMultiplier = ASPHALT_DRAG_COEFF_MULTIPLIER;
+    powerService.resetState();
+    powerState = powerService.getState();
 }
 
 void EVPowertrainSimulator::setIgnition(bool on) {
     // Safety: prevent stopping the high-voltage system while the vehicle is in motion (> 1 km/h)
-    if (!on && speed > 0.28) { 
-        spdlog::warn("Ignition stop rejected: Safety lock active while vehicle in motion ({:.1f} km/h)", speed * 3.6);
+    if (!on && powerState.speedKmh > 1.0) { 
+        spdlog::warn("Ignition stop rejected: Safety lock active while vehicle in motion ({:.1f} km/h)", powerState.speedKmh);
         return;
     }
 
@@ -30,12 +29,7 @@ void EVPowertrainSimulator::setIgnition(bool on) {
 }
 
 void EVPowertrainSimulator::update(double dt) {
-    tripTime += dt;
     modeSwitchTimer += dt;
-
-    // 0. Environment: Dynamic Air Density (Ideal Gas Law: rho = P / (R*T))
-    // Cold air is denser (more drag), hot air is thinner (less drag)
-    double airDensity = AIR_PRESSURE_SEA_LEVEL / (SPECIFIC_GAS_CONST_AIR * (ambientTemp + 273.15));
 
     // 1. Auxiliary Power Budgeting (12V vs High Voltage)
     // LV systems are available as soon as we "jump into the car"
@@ -77,159 +71,33 @@ void EVPowertrainSimulator::update(double dt) {
         if (ptChillerOn) hv_aux_load += ptChillerPowerDraw;
     }
 
-    // If Emergency: strictly lock to 20%. Otherwise: apply Thermal Derate and Drive Mode.
-    double modeMultiplier = emergencyShutdown ? 0.20 : (thermalDerate ? 0.70 : 1.0) * driveModeLimit;
+    // --- MICROSERVICE BOUNDARY: Build DTOs and call Physics Engine ---
+    VehicleCommandDTO cmd;
+    cmd.throttle = throttle;
+    cmd.brake = brake;
+    cmd.gradient = gradient;
+    cmd.ignitionOn = ignitionOn;
+    cmd.configuration = configuration;
+    cmd.driveMode = driveMode;
+    cmd.ambientTemp = ambientTemp;
+    cmd.windSpeed = windSpeed;
+    cmd.surfaceType = currentSurfaceType;
+    cmd.hvAuxLoadW = hv_aux_load;
+    cmd.isPrecheckReady = (precheckStatus == PrecheckStatus::Ready);
+
+    ThermalTelemetryDTO thermals;
+    thermals.emergencyShutdown = emergencyShutdown;
+    thermals.thermalDerate = thermalDerate;
     
-    // If ignition is off or pre-checks not ready, prevent propulsion
-    if (!ignitionOn || precheckStatus != PrecheckStatus::Ready) {
-        throttle = 0.0;
-        brake = 1.0; // Force brake to ensure no movement
-        modeMultiplier = 0.0; // No propulsion power
-    }
-
-    // Total available power from battery after mode restrictions and aux loads
-    double available_battery_power = (maxPower * modeMultiplier) - hv_aux_load;
-    // Net power available for propulsion (accounting for approx 94% motor/inv efficiency)
-    double propulsion_limit = std::max(0.0, available_battery_power * 0.94);
-
-    // Slew Rate Limiter: 3.0s for 0.3 power change (100% -> 70%) -> 0.1 units/sec
-    double maxStep = 0.1 * dt;
-    static double smoothLimit = 1.0; 
-    if (smoothLimit < modeMultiplier)
-        smoothLimit = std::min(modeMultiplier, smoothLimit + maxStep);
-    else if (smoothLimit > modeMultiplier)
-        smoothLimit = std::max(modeMultiplier, smoothLimit - maxStep);
-
-    double powerLimit = smoothLimit; // Apply the slew-rate limited power factor
-
-    // 1. Calculate Drive Torque (Constant Torque -> Constant Power)
-    double angular_vel = speed / wheelRadius;
-    double motor_rpm = (angular_vel * 60.0 / (2.0 * M_PI)) * 9.04;
-    
-    double active_max_torque = maxWheelTorque + (configuration == PowertrainConfig::AWD ? maxFrontWheelTorque : 0.0);
-    double active_max_regen = maxRegenTorque + (configuration == PowertrainConfig::AWD ? maxFrontRegenTorque : 0.0);
-
-    double total_avail_torque = (motor_rpm < 5000) ?
-        active_max_torque : std::min(active_max_torque, propulsion_limit / std::max(0.01, speed / wheelRadius));
-
-    // 1a. RPM Safety Limiter (Tesla RDU structural limit at 18,000 RPM)
-    if (motor_rpm > 17800.0) {
-        double rpm_limit_factor = std::max(0.0, (18000.0 - motor_rpm) / 200.0);
-        total_avail_torque *= rpm_limit_factor;
-    }
-
-    // Torque Vectoring: Rear handles heavy lifting, Front assists at high demand
-    double target_engine_torque = throttle * powerLimit * total_avail_torque;
-    double rear_engine_torque = std::min(target_engine_torque, maxWheelTorque);
-    double front_engine_torque = std::max(0.0, target_engine_torque - rear_engine_torque);
-    if (configuration == PowertrainConfig::RWD) front_engine_torque = 0.0;
-
-    double engine_force = (rear_engine_torque + front_engine_torque) / wheelRadius;
-
-    // 2. Resistance Forces
-    // Relative velocity determines drag: +windSpeed is a tailwind (reduces relative velocity)
-    double v_rel = speed - windSpeed;
-    double drag_force = 0.5 * (baseDragCoeff * currentDragCoeffMultiplier) * FRONTAL_AREA * airDensity * v_rel * std::abs(v_rel);
-
-    double rolling_force = currentRollingResistCoeff * mass * 9.81;
-    double gradient_force = mass * 9.81 * std::sin(gradient * M_PI / 180.0);
-
-    // 3. Braking Logic
-    double target_regen_torque = std::min(brake, 0.5) / 0.5 * active_max_regen;
-    double front_regen_torque = 0.0;
-    double rear_regen_torque = 0.0;
-
-    if (configuration == PowertrainConfig::AWD) {
-        // Regen Vectoring: Front motor takes priority for recuperation to maintain dynamic stability
-        front_regen_torque = std::min(target_regen_torque, maxFrontRegenTorque);
-        rear_regen_torque = std::max(0.0, target_regen_torque - front_regen_torque);
-    } else {
-        rear_regen_torque = target_regen_torque;
-    }
-
-    double regen_force = (rear_regen_torque + front_regen_torque) / wheelRadius;
-    double mech_brake_force = std::max(0.0, brake - 0.5) / 0.5 * 8.0 * mass;
-
-    double net_force = engine_force - drag_force - rolling_force - regen_force - mech_brake_force - gradient_force;
-    
-    // 4. Physics Integration
-    double acceleration = net_force / mass;
-    bool wasMoving = speed > 0.01; // 0.01 m/s threshold
-    speed = std::max(0.0, speed + acceleration * dt);
-    distance += speed * dt;
+    bool wasMoving = powerState.speedKmh > 0.1;
+    powerState = powerService.calculatePhysics(cmd, thermals, dt);
 
     // Reset brake to 0.0 if we just came to a full stop while driving
-    if (wasMoving && speed <= 0.0 && ignitionOn && precheckStatus == PrecheckStatus::Ready) {
+    if (wasMoving && powerState.speedKmh <= 0.0 && ignitionOn && precheckStatus == PrecheckStatus::Ready) {
         brake = 0.0;
     }
 
-    // 5. Energy Consumption
-    double rear_mech_power = rear_engine_torque * (speed / wheelRadius);
-    double front_mech_power = front_engine_torque * (speed / wheelRadius);
-    double mech_power = rear_mech_power + front_mech_power;
-    double speed_kmh = speed * 3.6;    
-
-    // Simple Voltage-Drop Model based on SOC
-    double soc = batteryEnergy / batteryCapacity;
-    // Voltage ranges from ~420V (Full) to ~320V (Empty)
-    double current_voltage = 320.0 + (100.0 * soc);
-    
-    // Detailed Propulsion Efficiency (from Master Spec)
-    double motor_rpm_norm = std::min(motor_rpm / 18000.0, 1.0);
-    double motor_eff = std::max(0.70, MOTOR_ETA_BASE - (MOTOR_K_COPPER * std::pow(throttle, 2)) - (MOTOR_K_IRON * motor_rpm_norm));
-    double inv_eff = std::max(0.85, INV_ETA_BASE - (INV_K_SWITCH * throttle));
-
-    double front_motor_eff = motor_eff; // Simulating similar induction/PMSM curve
-    double front_inv_eff = inv_eff;
-
-    // Total electrical draw: mech_power corrected by inverter/motor efficiencies + cabin aux
-    double electrical_draw = (rear_mech_power / (motor_eff * inv_eff)) + hv_aux_load;
-    if (configuration == PowertrainConfig::AWD && front_mech_power > 0) {
-        electrical_draw += (front_mech_power / (front_motor_eff * front_inv_eff));
-    }
-
-    // Battery Heat based on current (I = P/V)
-    double battery_current = electrical_draw / current_voltage;
-    // Joule Heating: Q = I^2 * R. Internal Resistance roughly 0.042 Ohms.
-    double battery_heat = std::pow(battery_current, 2) * 0.042;
-
-    double rear_regen_power = (rear_regen_torque / wheelRadius) * speed;
-    double front_regen_power = (front_regen_torque / wheelRadius) * speed;
-    double regen_power = rear_regen_power + front_regen_power;
-    double regen_returned = regen_power * 0.85;
-
-    batteryEnergy -= electrical_draw * dt;
-    batteryEnergy += regen_returned * dt;
-    batteryEnergy = std::min(batteryEnergy, batteryCapacity);
-    
-    lastPowerKw = (electrical_draw - regen_returned) / 1000.0;
-
-    // Efficiency calculation (30s rolling average approximation)
-    effPowerSum += std::max(0.0, lastPowerKw);
-    effSpeedSum += speed_kmh;
-    effTicks++;
-
-    if (effTicks > 600) { // 30s at 20Hz (50ms DT)
-        effPowerSum *= (600.0 / 601.0);
-        effSpeedSum *= (600.0 / 601.0);
-        effTicks = 600;
-    }
-    double avgSpeed = effSpeedSum / std::max(1, effTicks);
-    double avgPower = effPowerSum / std::max(1, effTicks);
-    lastEfficiencyKwh100 = (avgSpeed > 2.0) ? (avgPower / avgSpeed * 100.0) : 0.0;
-
     // 6. Thermal Modeling
-    // Heat is generated by losses in the conversion
-    double motor_heat = (std::abs(rear_mech_power) + std::abs(rear_regen_power)) * (1.0 - motor_eff);
-    double inv_heat = (std::abs(rear_mech_power) + std::abs(rear_regen_power)) * (1.0 - inv_eff);
-    
-    double front_motor_heat = 0.0;
-    double front_inv_heat = 0.0;
-    if (configuration == PowertrainConfig::AWD) {
-        front_motor_heat = (std::abs(front_mech_power) + std::abs(front_regen_power)) * (1.0 - front_motor_eff);
-        front_inv_heat = (std::abs(front_mech_power) + std::abs(front_regen_power)) * (1.0 - front_inv_eff);
-    }
-
     auto calculateDissipation = [&](double temp, double refCoolantTemp, CoolingAction action, double& heatToCoolant) {
         double q_air_base = NATURAL_CONVECTION * (temp - ambientTemp);
         heatToCoolant = 0.0;
@@ -263,8 +131,8 @@ void EVPowertrainSimulator::update(double dt) {
     if (configuration == PowertrainConfig::AWD) {
         double fmDiss = calculateDissipation(frontMotorTemp, coolantPTTemp, frontMotorAction, fMToPT);
         double fiDiss = calculateDissipation(frontInverterTemp, coolantPTTemp, frontInverterAction, fIToPT);
-        frontMotorTemp += ((front_motor_heat - fmDiss) * dt) / frontMotorThermalMass;
-        frontInverterTemp += ((front_inv_heat - fiDiss) * dt) / frontInverterThermalMass;
+        frontMotorTemp += ((powerState.frontMotorHeatW - fmDiss) * dt) / frontMotorThermalMass;
+        frontInverterTemp += ((powerState.frontInverterHeatW - fiDiss) * dt) / frontInverterThermalMass;
     } else {
         double fmDiss = calculateDissipation(frontMotorTemp, ambientTemp, CoolingAction::TURNED_OFF, fMToPT);
         double fiDiss = calculateDissipation(frontInverterTemp, ambientTemp, CoolingAction::TURNED_OFF, fIToPT);
@@ -272,12 +140,13 @@ void EVPowertrainSimulator::update(double dt) {
         frontInverterTemp += (-fiDiss * dt) / frontInverterThermalMass;
     }
 
-    motorTemp += ((motor_heat - mDiss) * dt) / motorThermalMass;
-    inverterTemp += ((inv_heat - iDiss) * dt) / inverterThermalMass;
-    batteryTemp += ((battery_heat - bDiss) * dt) / batteryThermalMass;
+    motorTemp += ((powerState.rearMotorHeatW - mDiss) * dt) / motorThermalMass;
+    inverterTemp += ((powerState.rearInverterHeatW - iDiss) * dt) / inverterThermalMass;
+    batteryTemp += ((powerState.batteryHeatW - bDiss) * dt) / batteryThermalMass;
 
     // 7. Coolant Loop Physics (Radiator + Ram Air)
     // Radiator cooling depends on the magnitude of relative air velocity
+    double v_rel = (powerState.speedKmh / 3.6) - windSpeed;
     double h_ram_boost = RAM_AIR_K * v_rel * v_rel;
 
     // Dynamic Fan Rejection (Hardware Logic: PT=2 fans, BAT=1 fan)
@@ -485,7 +354,7 @@ void EVPowertrainSimulator::updatePrecheckLogic() {
 void EVPowertrainSimulator::setAmbientTemp(double t) {
     ambientTemp = t;
     // Apply equilibrium only if vehicle is at rest AND has not yet started its journey
-    if (speed < 0.1 && distance < 0.001) {
+    if (powerState.speedKmh < 0.1 && powerState.distanceKm < 0.001) {
         motorTemp = t;
         inverterTemp = t;
             frontMotorTemp = t;
@@ -497,24 +366,7 @@ void EVPowertrainSimulator::setAmbientTemp(double t) {
 }
 
 void EVPowertrainSimulator::setSurfaceType(int typeIndex) {
-    switch (typeIndex) {
-        case 0: // Asphalt
-            currentRollingResistCoeff = ASPHALT_ROLLING_RESIST_COEFF;
-            currentDragCoeffMultiplier = ASPHALT_DRAG_COEFF_MULTIPLIER;
-            break;
-        case 1: // Gravel
-            currentRollingResistCoeff = GRAVEL_ROLLING_RESIST_COEFF;
-            currentDragCoeffMultiplier = GRAVEL_DRAG_COEFF_MULTIPLIER;
-            break;
-        case 2: // Ice
-            currentRollingResistCoeff = ICE_ROLLING_RESIST_COEFF;
-            currentDragCoeffMultiplier = 1.0; // Ice doesn't significantly change drag
-            break;
-        default: // Default to Asphalt
-            currentRollingResistCoeff = ASPHALT_ROLLING_RESIST_COEFF;
-            currentDragCoeffMultiplier = ASPHALT_DRAG_COEFF_MULTIPLIER;
-            break;
-    }
+    currentSurfaceType = typeIndex;
 }
 
 void EVPowertrainSimulator::setDriveMode(int index) {
