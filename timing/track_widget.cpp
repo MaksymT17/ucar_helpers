@@ -1,6 +1,5 @@
 #include "track_widget.h"
 #include <QPainter>
-#include <QDebug>
 #include <QImageReader>
 #include <QMouseEvent>
 #include <QFile>
@@ -8,6 +7,7 @@
 #include <QFileInfo>
 #include <cmath>
 #include <map>
+#include <spdlog/spdlog.h>
 
 // --- Projected 2026 Team & Driver Mappings ---
 // NOTE: This is a speculative mapping for the 2026 season based on contracts
@@ -21,23 +21,39 @@ static const std::map<QString, QString> driverToTeam = {
     {"ALO", "AST"}, {"STR", "AST"},       // Aston Martin lineup is stable
     {"HUL", "AUD"}, {"SAI", "AUD"},       // Audi entry with Hülkenberg confirmed, Sainz is a strong rumor
     {"GAS", "ALP"}, {"OCO", "ALP"},       // Alpine (Assumption)
-    {"ALB", "WIL"},                       // Williams
-    {"TSU", "VCB"}, {"RIC", "VCB"},       // Visa Cash App RB (Assumption)
+    {"ALB", "WIL"}, {"LIN", "WIL"},       // Williams (Assuming Linblad is a Williams driver for this example)
+    {"TSU", "VCB"}, {"RIC", "VCB"}, {"LIN", "VCB"}, // Visa Cash App RB (Assumption, added Linblad)
     {"BEA", "HAA"}, {"MAG", "HAA"}        // Haas (Bearman is speculation)
 };
 
 static const std::map<QString, QColor> teamColors = {
-    {"RBR", QColor("#060029")},       // Red Bull Racing (Dark Blue)
-    {"FER", QColor("#DC0000")},       // Ferrari (Red)
-    {"MER", QColor("#00D2BE")},       // Mercedes (Teal)
+    {"RBR", QColor("#0600EF")},       // Red Bull Racing (Dark Blue)
+    {"FER", QColor("#E8002D")},       // Ferrari (Red)
+    {"MER", QColor("#00D2BE")},       // Mercedes (Petronas Teal)
     {"MCL", QColor("#FF8700")},       // McLaren (Papaya Orange)
     {"AST", QColor("#006F62")},       // Aston Martin (Green)
     {"AUD", QColor("#D3D3D3")},       // Audi (Speculative Light Grey/Silver, replacing Sauber)
     {"ALP", QColor("#0090FF")},       // Alpine (Blue)
-    {"VCB", QColor("#6495ED")},       // Visa Cash App RB (Cornflower Blue)
-    {"WIL", QColor("#005AFF")},       // Williams (Blue)
+    {"VCB", QColor("#6692FF")},       // Visa Cash App RB (Blue)
+    {"WIL", QColor("#64C4FF")},       // Williams (Light Blue)
     {"HAA", QColor("#FFFFFF")}        // Haas (White)
 };
+
+// --- RACE ANALYTICS DATA STRUCTURE ---
+// Stores passively collected powertrain and aerodynamic characteristics 
+struct DriverAnalytics {
+    float maxLowSpeedAccel = 0.0f;         // Torque & Traction
+    float maxHighSpeedAccelClean = 0.0f;   // Peak Power (Clean Air)
+    float maxHighSpeedAccelDirty = 0.0f;   // Slipstream Power (Dirty Air)
+    float maxBrakingDecel = 0.0f;          // Aero-Assisted Braking
+    float terminalVelocityClean = 0.0f;    // Drag (Clean Air)
+    float terminalVelocityDirty = 0.0f;    // Drag (Dirty Air)
+    float absoluteMinSpeed = 999.0f;       // Mechanical Grip
+    
+    float prevSpeed = -1.0f;
+    float prevTime = -1.0f;
+};
+static std::map<QString, DriverAnalytics> raceAnalyticsMap;
 
 // Forward declaration for the function in virtual_gate_math.cpp
 std::vector<VirtualGate> generateVirtualGatesFromTelemetry(
@@ -75,7 +91,7 @@ void TrackSimulatorWidget::loadTrack(const TrackConfig& config) {
 bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
     QFile file(csvPath);
     if (!file.open(QIODevice::ReadOnly)) {
-        qWarning() << "Could not open telemetry file:" << csvPath;
+        spdlog::warn("Could not open telemetry file: {}", csvPath.toStdString());
         return false;
     }
 
@@ -225,8 +241,9 @@ bool TrackSimulatorWidget::loadTelemetry(const QString& csvPath) {
         }
     }
 
-    qDebug() << "Loaded" << newDriver.telemetry.size() << "telemetry entries for" << newDriver.abbreviation;
-    if (!newDriver.telemetry.empty()) qDebug() << "First speed:" << newDriver.telemetry.front().speed << "Last distance:" << newDriver.telemetry.back().distance;
+    spdlog::info("Loaded {} telemetry entries for {}", newDriver.telemetry.size(), newDriver.abbreviation.toStdString());
+    if (!newDriver.telemetry.empty()) 
+        spdlog::info("First speed: {} Last distance: {}", newDriver.telemetry.front().speed, newDriver.telemetry.back().distance);
     
     resizeEvent(nullptr);
     update();
@@ -243,6 +260,7 @@ void TrackSimulatorWidget::clearTelemetry() {
     lapCompleted = false;
     isDataDriven = false;
     leaderboardTimer = 0.0f;
+    raceAnalyticsMap.clear();
     // The old gate distances are no longer used, but clearing doesn't hurt.
     gateDistances.clear();
     emit leaderboardUpdated(QStringList(), 0);
@@ -250,14 +268,15 @@ void TrackSimulatorWidget::clearTelemetry() {
 }
 
 void TrackSimulatorWidget::startRace() {
-    qDebug() << "Race start triggered.";
+    spdlog::info("Race start triggered.");
     if (!animationTimer->isActive() && !drivers.empty() && !virtualGates.empty()) {
         // --- NEW LOGIC: Synchronize drivers to their starting gates ---
         // This runs only once when the race is first started (simTime is near zero).
         // It ensures that each driver's first target gate is the one immediately
         // in front of their grid position, solving the leaderboard shuffle at the start.
         if (simTime < 0.01f) {
-            qDebug() << "Synchronizing driver start gates for new race...";
+            spdlog::info("Synchronizing driver start gates for new race...");
+            raceAnalyticsMap.clear();
             for (auto& driver : drivers) {
                 if (driver.telemetry.empty()) continue;
 
@@ -279,19 +298,21 @@ void TrackSimulatorWidget::startRace() {
                     }
                 }
                 driver.nextGateIndex = initialGateIndex;
-                qDebug() << "  - " << driver.abbreviation << " starts, next target is VG" << driver.nextGateIndex;
+                spdlog::info("  - {} starts, next target is VG{}", driver.abbreviation.toStdString(), driver.nextGateIndex);
+                
+                raceAnalyticsMap[driver.abbreviation] = DriverAnalytics();
             }
         }
 
-        qDebug() << "Starting animation timer.";
+        spdlog::info("Starting animation timer.");
         animationTimer->start(16); // ~60 FPS
     } else if (virtualGates.empty()) {
-        qWarning() << "Cannot start race: Virtual Gates have not been generated yet.";
+        spdlog::warn("Cannot start race: Virtual Gates have not been generated yet.");
     }
 }
 
 void TrackSimulatorWidget::generateVirtualGates() {
-    qDebug() << "Generate VGs button clicked.";
+    spdlog::info("Generate VGs button clicked.");
 
     const DriverSimState* poleDriver = nullptr;
     for (const auto& driver : drivers) {
@@ -306,13 +327,14 @@ void TrackSimulatorWidget::generateVirtualGates() {
     QString sourceDriverName;
 
     if (poleDriver) {
-        qDebug() << "Using dedicated POLE lap data from" << poleDriver->abbreviation;
+        spdlog::info("Using dedicated POLE lap data from {}", poleDriver->abbreviation.toStdString());
         telemetryForGeneration = &poleDriver->telemetry;
         sourceDriverName = poleDriver->abbreviation;
     } else {
-        qWarning() << "Could not find a POLE lap driver to generate Virtual Gates.";
+        spdlog::warn("Could not find a POLE lap driver to generate Virtual Gates.");
         if (!drivers.empty()) {
-            const DriverSimState* fallbackDriver = &drivers[0]; qWarning() << "Defaulting to first loaded driver and extracting a single lap:" << fallbackDriver->abbreviation;
+            const DriverSimState* fallbackDriver = &drivers[0]; 
+            spdlog::warn("Defaulting to first loaded driver and extracting a single lap: {}", fallbackDriver->abbreviation.toStdString());
 
             // Extract a single, clean lap (e.g., Lap 2) from the full race telemetry.
             singleLapTelemetry.clear();
@@ -322,7 +344,7 @@ void TrackSimulatorWidget::generateVirtualGates() {
             }
             // If Lap 2 had no data (e.g. short race), try Lap 1 as a backup.
             if (singleLapTelemetry.empty()) {
-                qWarning() << "Could not find any data for Lap 2, trying Lap 1.";
+                spdlog::warn("Could not find any data for Lap 2, trying Lap 1.");
                 for(const auto& entry : fallbackDriver->telemetry) {
                     if (entry.lapNumber == 1) singleLapTelemetry.push_back(entry);
                 }
@@ -330,13 +352,13 @@ void TrackSimulatorWidget::generateVirtualGates() {
 
             telemetryForGeneration = &singleLapTelemetry;
         } else {
-            qWarning() << "No drivers loaded, cannot generate gates.";
+            spdlog::warn("No drivers loaded, cannot generate gates.");
             return;
         }
     }
 
     if (!telemetryForGeneration || telemetryForGeneration->empty()) {
-        qWarning() << "Selected telemetry for VG generation is empty or invalid.";
+        spdlog::warn("Selected telemetry for VG generation is empty or invalid.");
         return;
     }
 
@@ -351,7 +373,7 @@ void TrackSimulatorWidget::generateVirtualGates() {
         virtualGatesPath.moveTo(gate.p1);
         virtualGatesPath.lineTo(gate.p2);
     }
-    qDebug() << "Generated" << virtualGates.size() << "virtual gates from" << sourceDriverName << "data.";
+    spdlog::info("Generated {} virtual gates from {} data.", virtualGates.size(), sourceDriverName.toStdString());
     update();
 }
 
@@ -380,7 +402,7 @@ void TrackSimulatorWidget::mousePressEvent(QMouseEvent *event) {
     float normX = (float)event->pos().x() / width();
     float normY = (float)event->pos().y() / height();
     
-    qDebug() << "Captured Point: {" << normX << "," << normY << "},";
+    spdlog::info("Captured Point: {{{}, {}}},", normX, normY);
 }
 
 void TrackSimulatorWidget::updateAnimation() {
@@ -388,7 +410,7 @@ void TrackSimulatorWidget::updateAnimation() {
     // If race has started, also require VGs to be generated.
     if (!isDataDriven || drivers.empty() || (animationTimer->isActive() && virtualGates.empty())) {
         if (animationTimer->isActive() && virtualGates.empty()) {
-            qWarning() << "Race started but Virtual Gates not generated. Please generate VGs.";
+            spdlog::warn("Race started but Virtual Gates not generated. Please generate VGs.");
             animationTimer->stop();
         }
         return;
@@ -448,6 +470,23 @@ void TrackSimulatorWidget::updateAnimation() {
                     .arg(i + 1).arg(sorted[i]->abbreviation).arg(vgLabel).arg(gapStr);
             }
             emit leaderboardUpdated(entries, leaderLap);
+
+            // Print out real-time Race Analytics
+            spdlog::info("--- LIVE RACE ANALYTICS ({:.1f}s) ---", simTime);
+            for (const auto& aDriver : sorted) {
+                const auto& a = raceAnalyticsMap[aDriver->abbreviation];
+                // Format strictly as JSON for database ingestion
+                QString logStr = QString("{\"drv\": \"%1\", \"t\": %2, \"trq\": %3, \"pwr\": %4, \"drg\": %5, \"brk\": %6, \"grp\": %7}")
+                    .arg(aDriver->abbreviation)
+                    .arg(simTime, 0, 'f', 1)
+                    .arg(a.maxLowSpeedAccel, 0, 'f', 1)
+                    .arg(a.maxHighSpeedAccelClean, 0, 'f', 1)
+                    .arg(a.terminalVelocityClean, 0, 'f', 1)
+                    .arg(a.maxBrakingDecel, 0, 'f', 1)
+                    .arg(a.absoluteMinSpeed, 0, 'f', 1);
+                spdlog::info("{}", logStr.toStdString().c_str());
+            }
+            spdlog::info("----------------------------------------");
         }
 
         for (auto& driver : drivers) {
@@ -466,6 +505,7 @@ void TrackSimulatorWidget::updateAnimation() {
             
             // Interpolate position for smooth animation
             QPointF interpPos;
+            float interpSpeed = 0.0f;
             size_t idx = driver.lastIndex;
             if (idx < driver.telemetry.size() - 1) {
                 const auto& t0 = driver.telemetry[idx];
@@ -473,8 +513,10 @@ void TrackSimulatorWidget::updateAnimation() {
                 float segmentDuration = t1.time - t0.time;
                 float factor = (segmentDuration > 0.001f) ? std::clamp((simTime - t0.time) / segmentDuration, 0.0f, 1.0f) : 0.0f;
                 interpPos = t0.normalizedPos + (t1.normalizedPos - t0.normalizedPos) * factor;
+                interpSpeed = t0.speed + (t1.speed - t0.speed) * factor;
             } else {
                 interpPos = driver.telemetry[idx].normalizedPos;
+                interpSpeed = driver.telemetry[idx].speed;
             }
 
             // --- VIRTUAL GATE CROSSING DETECTION ---
@@ -533,8 +575,57 @@ void TrackSimulatorWidget::updateAnimation() {
 
             // Keep track line visible once the lead driver finishes
             if (&driver == &drivers[0] && driver.lastIndex >= (int)driver.telemetry.size() - 1 && !lapCompleted) {
-                qDebug() << "updateAnimation lapCompleted";
+                spdlog::info("updateAnimation lapCompleted");
                 lapCompleted = true;
+            }
+
+            // --- PASSIVE RACE ANALYTICS COLLECTION ---
+            // This block strictly observes data and does not modify simulation flow.
+            if (idx < driver.telemetry.size()) {
+                const auto& tData = driver.telemetry[idx];
+                auto& analytics = raceAnalyticsMap[driver.abbreviation];
+                
+                // Determine Dirty Air: Is there another car less than 150m ahead of us?
+                bool inDirtyAir = false;
+                for (const auto& other : drivers) {
+                    if (&other == &driver) continue;
+                    float distDiff = other.distanceTraveled - driver.distanceTraveled;
+                    if (distDiff > 0.0f && distDiff < 150.0f) {
+                        inDirtyAir = true;
+                        break;
+                    }
+                }
+
+                if (analytics.prevTime > 0.0f && simTime > analytics.prevTime) {
+                    float dt = simTime - analytics.prevTime;
+                    float dv = interpSpeed - analytics.prevSpeed; // Use smooth interpolated speed
+                    float accel = dv / dt; // Acceleration in (km/h)/s
+
+                    // Filter out unrealistic telemetry physics spikes (illusions) before saving them to analytics
+                    if (accel > -150.0f && accel < 100.0f) {
+                        // Powertrain: Torque / Traction (Low Speed)
+                        if (interpSpeed < 150.0f && tData.throttle > 98.0f) analytics.maxLowSpeedAccel = std::max(analytics.maxLowSpeedAccel, accel);
+                        
+                        // Powertrain: Peak Power vs Drag (High Speed)
+                        if (interpSpeed > 250.0f && tData.throttle > 98.0f) {
+                            if (inDirtyAir) analytics.maxHighSpeedAccelDirty = std::max(analytics.maxHighSpeedAccelDirty, accel);
+                            else analytics.maxHighSpeedAccelClean = std::max(analytics.maxHighSpeedAccelClean, accel);
+                        }
+
+                        // Aerodynamics: Aero-Assisted Braking
+                        if (interpSpeed > 250.0f && tData.brake > 0.0f) analytics.maxBrakingDecel = std::min(analytics.maxBrakingDecel, accel);
+                    }
+
+                    // Aerodynamics: Drag (Terminal Velocity)
+                    if (inDirtyAir) analytics.terminalVelocityDirty = std::max(analytics.terminalVelocityDirty, interpSpeed);
+                    else analytics.terminalVelocityClean = std::max(analytics.terminalVelocityClean, interpSpeed);
+
+                    // Aerodynamics/Chassis: Mechanical Grip (Only sample after Turn 1 chaos > 500m)
+                    if (driver.distanceTraveled > 500.0f && interpSpeed < analytics.absoluteMinSpeed && interpSpeed > 20.0f) analytics.absoluteMinSpeed = interpSpeed;
+                }
+                
+                analytics.prevSpeed = interpSpeed;
+                analytics.prevTime = simTime;
             }
         }
         update();
@@ -635,7 +726,8 @@ void TrackSimulatorWidget::paintEvent(QPaintEvent *event) {
         painter.setBrush(driver.color);
         painter.setPen(QPen(driver.borderColor, 2)); // Use team-specific border color
         painter.drawEllipse(carPos, 9, 9); // Slightly smaller radius to account for thicker border
-        
+        // Set label color to light grey for better readability
+        painter.setPen(QPen(Qt::white, 1));
         // Draw Simple Label: Just the abbreviation to reduce redundancy
         QString label = driver.abbreviation;
         painter.drawText(carPos + QPointF(12, 5), label);

@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(ucar_timing LANGUAGES CXX)
 
+find_package(spdlog REQUIRED)
+find_package(fmt REQUIRED)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -24,7 +27,7 @@ add_executable(timing
     assets.qrc
 )
 
-target_link_libraries(timing PRIVATE ${Qt_LIBRARIES})
+target_link_libraries(timing PRIVATE ${Qt_LIBRARIES} spdlog::spdlog fmt::fmt)
 
 if(APPLE)
     target_compile_options(timing PRIVATE -Wno-implicit-function-declaration)

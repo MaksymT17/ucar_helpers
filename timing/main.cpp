@@ -1,17 +1,36 @@
 #include <QApplication>
 #include <QDir>
-#include <QDebug>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QListWidget>
 #include <QLabel>
 #include <QPushButton>
 #include <QComboBox>
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 #include "track_widget.h"
 
 int main(int argc, char *argv[]) {
-    // Custom data types for leaderboard coloring have been removed.
     QApplication app(argc, argv);
+
+    // Setup spdlog dual-sink (Console + File)
+    try {
+        // Force the log file to be created exactly next to the executable
+        QString logFilePath = QCoreApplication::applicationDirPath() + "/race_analytics.log";
+
+        auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+        auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logFilePath.toStdString(), true);
+        
+        spdlog::sinks_init_list sink_list = {console_sink, file_sink};
+        auto logger = std::make_shared<spdlog::logger>("race_logger", sink_list.begin(), sink_list.end());
+        
+        spdlog::set_default_logger(logger);
+        spdlog::flush_every(std::chrono::seconds(2)); // Flush frequently so we don't lose data on crash
+        spdlog::info("UCAR Simulator Started. Logging initialized.");
+    } catch (const spdlog::spdlog_ex &ex) {
+        printf("Log init failed: %s\n", ex.what());
+    }
 
     QWidget mainWin;
     mainWin.setWindowTitle("UCAR Australia Track Simulator");
@@ -130,7 +149,7 @@ int main(int argc, char *argv[]) {
 
         for (const QString& filename : files) {
             QString fullPath = dir.filePath(filename);
-            qDebug() << "Loading driver data:" << fullPath;
+            spdlog::info("Loading driver data: {}", fullPath.toStdString());
             viewer->loadTelemetry(fullPath);
         }
         
